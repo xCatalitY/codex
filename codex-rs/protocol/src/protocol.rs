@@ -633,6 +633,12 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         permission_profile: Option<PermissionProfile>,
 
+        /// Named or built-in profile that produced `permission_profile`, if
+        /// the update selected a profile rather than supplying raw
+        /// permissions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_permission_profile: Option<ActivePermissionProfile>,
+
         /// Updated Windows sandbox mode for tool execution.
         #[serde(skip_serializing_if = "Option::is_none")]
         windows_sandbox_level: Option<WindowsSandboxLevel>,
