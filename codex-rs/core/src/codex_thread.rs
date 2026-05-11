@@ -138,8 +138,21 @@ impl CodexThread {
             .await
     }
 
-    pub async fn prepare_turn_start_op(&self, params: TurnStartParams) -> CodexResult<(Op, bool)> {
-        handlers::prepare_turn_start_op(&self.codex.session, params).await
+    pub async fn validate_turn_start_params(&self, params: TurnStartParams) -> CodexResult<()> {
+        handlers::prepare_turn_start_op(&self.codex.session, params)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn start_turn_from_params(
+        &self,
+        params: TurnStartParams,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<(String, bool)> {
+        let (turn_op, turn_has_input) =
+            handlers::prepare_turn_start_op(&self.codex.session, params).await?;
+        let turn_id = self.codex.submit_with_trace(turn_op, trace).await?;
+        Ok((turn_id, turn_has_input))
     }
 
     pub async fn prepare_external_goal_mutation(&self) {

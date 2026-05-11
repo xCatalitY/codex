@@ -13,13 +13,6 @@ pub(crate) struct TurnRequestProcessor {
     thread_list_state_permit: Arc<Semaphore>,
 }
 
-struct PreparedTurnStart {
-    thread_id: ThreadId,
-    thread: Arc<CodexThread>,
-    turn_op: Op,
-    turn_has_input: bool,
-}
-
 impl TurnRequestProcessor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -53,30 +46,14 @@ impl TurnRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        if let Err(error) = Self::validate_v2_input_limit(&params.input) {
-            self.track_error_response(
-                &request_id,
-                &error,
-                Some(AnalyticsJsonRpcError::Input(InputError::TooLarge)),
-            );
-            return Err(error);
-        }
-        let prepared = self
-            .prepare_turn_start(params, app_server_client_name, app_server_client_version)
-            .await
-            .inspect_err(|error| {
-                self.track_error_response(&request_id, error, /*error_type*/ None);
-            })?;
-        let response = self
-            .submit_prepared_turn_start(prepared, self.request_trace_context(&request_id).await)
-            .await
-            .inspect_err(|error| {
-                self.track_error_response(&request_id, error, /*error_type*/ None);
-            })?;
-        self.outgoing
-            .record_request_turn_id(&request_id, &response.turn.id)
-            .await;
-        Ok(Some(response.into()))
+        self.turn_start_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await
+        .map(|response| Some(response.into()))
     }
 
     pub(crate) async fn thread_inject_items(
@@ -93,7 +70,11 @@ impl TurnRequestProcessor {
         params: TurnStartParams,
     ) -> Result<(), JSONRPCErrorError> {
         Self::validate_v2_input_limit(&params.input)?;
-        self.prepare_queued_turn_start(params).await?;
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        thread
+            .validate_turn_start_params(params)
+            .await
+            .map_err(Self::prepare_turn_start_error)?;
         Ok(())
     }
 
@@ -297,81 +278,53 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
-    async fn prepare_turn_start(
+    async fn turn_start_inner(
         &self,
+        request_id: ConnectionRequestId,
         params: TurnStartParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
-    ) -> Result<PreparedTurnStart, JSONRPCErrorError> {
-        self.prepare_turn_start_inner(
-            params,
-            Some((app_server_client_name, app_server_client_version)),
+    ) -> Result<TurnStartResponse, JSONRPCErrorError> {
+        if let Err(error) = Self::validate_v2_input_limit(&params.input) {
+            self.track_error_response(
+                &request_id,
+                &error,
+                Some(AnalyticsJsonRpcError::Input(InputError::TooLarge)),
+            );
+            return Err(error);
+        }
+        let (thread_id, thread) =
+            self.load_thread(&params.thread_id)
+                .await
+                .inspect_err(|error| {
+                    self.track_error_response(&request_id, error, /*error_type*/ None);
+                })?;
+        Self::set_app_server_client_info(
+            thread.as_ref(),
+            app_server_client_name,
+            app_server_client_version,
         )
         .await
-    }
+        .inspect_err(|error| {
+            self.track_error_response(&request_id, error, /*error_type*/ None);
+        })?;
 
-    async fn prepare_queued_turn_start(
-        &self,
-        params: TurnStartParams,
-    ) -> Result<PreparedTurnStart, JSONRPCErrorError> {
-        self.prepare_turn_start_inner(params, None).await
-    }
-
-    async fn prepare_turn_start_inner(
-        &self,
-        params: TurnStartParams,
-        app_server_client_info: Option<(Option<String>, Option<String>)>,
-    ) -> Result<PreparedTurnStart, JSONRPCErrorError> {
-        let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
-        if let Some((app_server_client_name, app_server_client_version)) = app_server_client_info {
-            Self::set_app_server_client_info(
-                thread.as_ref(),
-                app_server_client_name,
-                app_server_client_version,
-            )
-            .await?;
-        }
-        let (turn_op, turn_has_input) = thread
-            .prepare_turn_start_op(params)
+        let (turn_id, turn_has_input) = thread
+            .start_turn_from_params(params, self.request_trace_context(&request_id).await)
             .await
-            .map_err(Self::prepare_turn_start_error)?;
-        Ok(PreparedTurnStart {
-            thread_id,
-            thread,
-            turn_op,
-            turn_has_input,
-        })
-    }
-
-    fn prepare_turn_start_error(err: CodexErr) -> JSONRPCErrorError {
-        match err {
-            CodexErr::InvalidRequest(message) => invalid_request(message),
-            CodexErr::Io(err) => config_load_error(&err),
-            err => internal_error(format!("failed to prepare turn start: {err}")),
-        }
-    }
-
-    async fn submit_prepared_turn_start(
-        &self,
-        prepared: PreparedTurnStart,
-        trace_context: Option<codex_protocol::protocol::W3cTraceContext>,
-    ) -> Result<TurnStartResponse, JSONRPCErrorError> {
-        let PreparedTurnStart {
-            thread_id,
-            thread,
-            turn_op,
-            turn_has_input,
-        } = prepared;
-        let turn_id = thread
-            .submit_with_trace(turn_op, trace_context)
-            .await
-            .map_err(|err| internal_error(format!("failed to start turn: {err}")))?;
+            .map_err(Self::start_turn_from_params_error)
+            .inspect_err(|error| {
+                self.track_error_response(&request_id, error, /*error_type*/ None);
+            })?;
 
         if turn_has_input {
             self.start_memories_startup_task_for_thread(thread_id, Arc::clone(&thread))
                 .await;
         }
 
+        self.outgoing
+            .record_request_turn_id(&request_id, &turn_id)
+            .await;
         let turn = Turn {
             id: turn_id,
             items: vec![],
@@ -384,6 +337,22 @@ impl TurnRequestProcessor {
         };
 
         Ok(TurnStartResponse { turn })
+    }
+
+    fn prepare_turn_start_error(err: CodexErr) -> JSONRPCErrorError {
+        match err {
+            CodexErr::InvalidRequest(message) => invalid_request(message),
+            CodexErr::Io(err) => config_load_error(&err),
+            err => internal_error(format!("failed to prepare turn start: {err}")),
+        }
+    }
+
+    fn start_turn_from_params_error(err: CodexErr) -> JSONRPCErrorError {
+        match err {
+            CodexErr::InvalidRequest(message) => invalid_request(message),
+            CodexErr::Io(err) => config_load_error(&err),
+            err => internal_error(format!("failed to start turn: {err}")),
+        }
     }
 
     pub(crate) async fn start_memories_startup_task_for_thread(
