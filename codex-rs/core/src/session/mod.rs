@@ -61,6 +61,7 @@ use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
+use codex_login::default_client::client_identity_from_parts;
 use codex_login::default_client::originator;
 use codex_mcp::McpConnectionManager;
 use codex_mcp::McpRuntimeEnvironment;
@@ -768,11 +769,29 @@ impl Codex {
     ) -> ConstraintResult<()> {
         self.session
             .update_settings(SessionSettingsUpdate {
-                app_server_client_name,
-                app_server_client_version,
+                app_server_client_name: app_server_client_name.clone(),
+                app_server_client_version: app_server_client_version.clone(),
                 ..Default::default()
             })
             .await?;
+        let client_identity = match app_server_client_name {
+            Some(name) => {
+                let user_agent_suffix =
+                    app_server_client_version.map(|version| format!("{name}; {version}"));
+                match client_identity_from_parts(name, user_agent_suffix) {
+                    Ok(identity) => Some(identity),
+                    Err(_) => {
+                        tracing::warn!("app-server client name was not a valid originator");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        self.session
+            .services
+            .model_client
+            .set_client_identity(client_identity);
         let mcp_connection_manager = self.session.services.mcp_connection_manager.read().await;
         mcp_connection_manager.set_elicitations_auto_deny(mcp_elicitations_auto_deny);
         Ok(())

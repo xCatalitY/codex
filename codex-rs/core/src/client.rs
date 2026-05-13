@@ -66,7 +66,12 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
+use codex_login::default_client::ClientIdentity;
 use codex_login::default_client::build_reqwest_client;
+use codex_login::default_client::build_reqwest_client_for_identity;
+use codex_login::default_client::default_headers;
+use codex_login::default_client::default_headers_for_identity;
+use codex_login::default_client::scoped_client_identity;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 
@@ -178,6 +183,7 @@ struct ModelClientState {
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    client_identity: StdMutex<Option<ClientIdentity>>,
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -347,6 +353,7 @@ impl ModelClient {
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                client_identity: StdMutex::new(scoped_client_identity()),
             }),
         }
     }
@@ -374,6 +381,15 @@ impl ModelClient {
         self.store_cached_websocket_session(WebsocketSession::default());
     }
 
+    pub(crate) fn set_client_identity(&self, client_identity: Option<ClientIdentity>) {
+        let mut guard = self
+            .state
+            .client_identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = client_identity;
+    }
+
     pub(crate) fn advance_window_generation(&self) {
         self.state.window_generation.fetch_add(1, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());
@@ -392,6 +408,32 @@ impl ModelClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::take(&mut *cached_websocket_session)
+    }
+
+    pub(crate) fn default_headers(&self) -> ApiHeaderMap {
+        let identity = self
+            .state
+            .client_identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match identity {
+            Some(identity) => default_headers_for_identity(&identity),
+            None => default_headers(),
+        }
+    }
+
+    fn build_reqwest_client(&self) -> reqwest::Client {
+        let identity = self
+            .state
+            .client_identity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match identity {
+            Some(identity) => build_reqwest_client_for_identity(&identity),
+            None => build_reqwest_client(),
+        }
     }
 
     fn store_cached_websocket_session(&self, websocket_session: WebsocketSession) {
@@ -442,7 +484,7 @@ impl ModelClient {
             return Ok(Vec::new());
         }
         let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
+        let transport = ReqwestTransport::new(self.build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
             AuthRequestTelemetryContext::new(
@@ -530,7 +572,7 @@ impl ModelClient {
         sideband_headers.extend(sideband_websocket_auth_headers(
             client_setup.api_auth.as_ref(),
         ));
-        let transport = ReqwestTransport::new(build_reqwest_client());
+        let transport = ReqwestTransport::new(self.build_reqwest_client());
         let response =
             ApiRealtimeCallClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .create_with_session_and_headers(sdp, session_config, extra_headers)
@@ -561,7 +603,7 @@ impl ModelClient {
         }
 
         let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
+        let transport = ReqwestTransport::new(self.build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
             AuthRequestTelemetryContext::new(
@@ -823,7 +865,7 @@ impl ModelClient {
             websocket_connect_timeout,
             ApiWebSocketResponsesClient::new(api_provider, api_auth).connect(
                 headers,
-                codex_login::default_client::default_headers(),
+                self.default_headers(),
                 turn_state,
                 Some(websocket_telemetry),
             ),
@@ -1225,7 +1267,7 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let client_setup = self.client.current_client_setup().await?;
-            let transport = ReqwestTransport::new(build_reqwest_client());
+            let transport = ReqwestTransport::new(self.client.build_reqwest_client());
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),

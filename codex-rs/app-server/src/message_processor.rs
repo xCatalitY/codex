@@ -73,6 +73,8 @@ use codex_login::auth::ExternalAuth;
 use codex_login::auth::ExternalAuthRefreshContext;
 use codex_login::auth::ExternalAuthRefreshReason;
 use codex_login::auth::ExternalAuthTokens;
+use codex_login::default_client::ClientIdentity;
+use codex_login::default_client::with_client_identity;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
@@ -193,6 +195,7 @@ pub(crate) struct InitializedConnectionSessionState {
     pub(crate) opted_out_notification_methods: HashSet<String>,
     pub(crate) app_server_client_name: String,
     pub(crate) client_version: String,
+    pub(crate) client_identity: ClientIdentity,
     pub(crate) request_attestation: bool,
 }
 
@@ -237,6 +240,12 @@ impl ConnectionSessionState {
         self.initialized
             .get()
             .map(|session| session.client_version.as_str())
+    }
+
+    pub(crate) fn client_identity(&self) -> Option<ClientIdentity> {
+        self.initialized
+            .get()
+            .map(|session| session.client_identity.clone())
     }
 
     pub(crate) fn request_attestation(&self) -> bool {
@@ -800,6 +809,7 @@ impl MessageProcessor {
         let serialization_scope = codex_request.serialization_scope();
         let app_server_client_name = session.app_server_client_name().map(str::to_string);
         let client_version = session.client_version().map(str::to_string);
+        let client_identity = session.client_identity();
         let error_request_id = connection_request_id.clone();
         let rpc_gate = Arc::clone(&session.rpc_gate);
         let processor = Arc::clone(self);
@@ -808,15 +818,17 @@ impl MessageProcessor {
             rpc_gate,
             async move {
                 let processor_for_request = Arc::clone(&processor);
-                let result = processor_for_request
-                    .handle_initialized_client_request(
-                        connection_request_id,
-                        codex_request,
-                        request_context,
-                        app_server_client_name,
-                        client_version,
-                    )
-                    .await;
+                let request_future = processor_for_request.handle_initialized_client_request(
+                    connection_request_id,
+                    codex_request,
+                    request_context,
+                    app_server_client_name,
+                    client_version,
+                );
+                let result = match client_identity {
+                    Some(identity) => with_client_identity(identity, request_future).await,
+                    None => request_future.await,
+                };
                 if let Err(error) = result {
                     processor.outgoing.send_error(error_request_id, error).await;
                 }

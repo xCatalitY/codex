@@ -1499,18 +1499,21 @@ pub(crate) async fn lookup_mcp_tool_metadata(
         .into_iter()
         .find(|tool_info| tool_info.server_name == server && tool_info.tool.name == tool_name)?;
     let connector_description = if server == CODEX_APPS_MCP_SERVER_NAME {
-        let connectors = match connectors::list_cached_accessible_connectors_from_mcp_tools(
-            turn_context.config.as_ref(),
-        )
-        .await
-        {
-            Some(connectors) => Some(connectors),
-            None => {
-                connectors::list_accessible_connectors_from_mcp_tools(turn_context.config.as_ref())
-                    .await
-                    .ok()
-            }
-        };
+        let connectors =
+            match connectors::list_cached_accessible_connectors_from_mcp_tools_with_originator(
+                turn_context.config.as_ref(),
+                turn_context.originator.as_str(),
+            )
+            .await
+            {
+                Some(connectors) => Some(connectors),
+                None => connectors::list_accessible_connectors_from_mcp_tools_with_originator(
+                    turn_context.config.as_ref(),
+                    turn_context.originator.as_str(),
+                )
+                .await
+                .ok(),
+            };
         connectors.and_then(|connectors| {
             let connector_id = tool_info.connector_id.as_deref()?;
             connectors

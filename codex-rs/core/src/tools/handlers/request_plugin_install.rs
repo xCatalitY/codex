@@ -120,6 +120,7 @@ impl ToolExecutor<ToolInvocation> for RequestPluginInstallHandler {
             &turn.config,
             auth.as_ref(),
             &accessible_connectors,
+            turn.originator.as_str(),
         )
         .await
         .map(|discoverable_tools| {

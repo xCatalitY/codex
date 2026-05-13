@@ -1,5 +1,7 @@
 use super::*;
 use crate::error_code::method_not_found;
+use codex_login::default_client::scoped_client_identity;
+use codex_login::default_client::with_client_identity;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -859,6 +861,7 @@ impl ThreadRequestProcessor {
         let config_manager = self.config_manager.clone();
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
+        let thread_start_client_identity = scoped_client_identity();
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
@@ -879,6 +882,12 @@ impl ThreadRequestProcessor {
             .await
             {
                 outgoing.send_error(error_request_id, error).await;
+            }
+        };
+        let thread_start_task = async move {
+            match thread_start_client_identity {
+                Some(identity) => with_client_identity(identity, thread_start_task).await,
+                None => thread_start_task.await,
             }
         };
         self.background_tasks

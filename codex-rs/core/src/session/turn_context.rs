@@ -2,6 +2,7 @@ use super::*;
 use crate::SkillLoadOutcome;
 use crate::config::GhostSnapshotConfig;
 use crate::environment_selection::ResolvedTurnEnvironments;
+use codex_login::default_client::originator;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
@@ -73,6 +74,7 @@ pub struct TurnContext {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
+    pub(crate) originator: String,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
     pub(crate) compact_prompt: Option<String>,
@@ -259,6 +261,7 @@ impl TurnContext {
             cwd: self.cwd.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            originator: self.originator.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
@@ -484,10 +487,17 @@ impl Session {
         let reasoning_summary = session_configuration
             .model_reasoning_summary
             .unwrap_or(model_info.default_reasoning_summary);
-        let session_telemetry = session_telemetry.clone().with_model(
-            session_configuration.collaboration_mode.model(),
-            model_info.slug.as_str(),
-        );
+        let originator = session_configuration
+            .app_server_client_name
+            .clone()
+            .unwrap_or_else(|| originator().value);
+        let session_telemetry = session_telemetry
+            .clone()
+            .with_model(
+                session_configuration.collaboration_mode.model(),
+                model_info.slug.as_str(),
+            )
+            .with_originator(originator.as_str());
         let session_source = session_configuration.session_source.clone();
         let image_generation_tool_auth_allowed =
             image_generation_tool_auth_allowed(auth_manager.as_deref());
@@ -578,6 +588,7 @@ impl Session {
             cwd,
             current_date: Some(current_date),
             timezone: Some(timezone),
+            originator,
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),

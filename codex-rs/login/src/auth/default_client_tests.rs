@@ -89,6 +89,39 @@ async fn test_create_client_sets_default_headers() {
     set_default_client_residency_requirement(/*enforce_residency*/ None);
 }
 
+#[tokio::test]
+async fn scoped_client_identity_overrides_process_default_headers() {
+    let identity = client_identity_from_parts(
+        "codex_ios".to_string(),
+        Some("codex_ios; 1.2.3".to_string()),
+    )
+    .expect("identity should be valid");
+
+    with_client_identity(identity, async {
+        assert_eq!(originator().value, "codex_ios");
+
+        let headers = default_headers();
+        assert_eq!(
+            headers
+                .get("originator")
+                .expect("originator header missing")
+                .to_str()
+                .expect("originator should be valid"),
+            "codex_ios"
+        );
+        assert!(
+            headers
+                .get("user-agent")
+                .expect("user-agent header missing")
+                .to_str()
+                .expect("user-agent should be valid")
+                .starts_with("codex_ios/")
+        );
+        assert!(get_codex_user_agent().contains("(codex_ios; 1.2.3)"));
+    })
+    .await;
+}
+
 #[test]
 fn test_invalid_suffix_is_sanitized() {
     let prefix = "codex_cli_rs/0.0.0";

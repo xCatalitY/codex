@@ -13,6 +13,7 @@ use codex_terminal_detection::user_agent;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::USER_AGENT;
+use std::future::Future;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -44,6 +45,17 @@ pub struct Originator {
     pub value: String,
     pub header_value: HeaderValue,
 }
+
+#[derive(Debug, Clone)]
+pub struct ClientIdentity {
+    pub originator: Originator,
+    pub user_agent_suffix: Option<String>,
+}
+
+tokio::task_local! {
+    static SCOPED_CLIENT_IDENTITY: ClientIdentity;
+}
+
 static ORIGINATOR: LazyLock<RwLock<Option<Originator>>> = LazyLock::new(|| RwLock::new(None));
 static REQUIREMENTS_RESIDENCY: LazyLock<RwLock<Option<ResidencyRequirement>>> =
     LazyLock::new(|| RwLock::new(None));
@@ -75,6 +87,25 @@ fn get_originator_value(provided: Option<String>) -> Originator {
     }
 }
 
+pub fn originator_from_value(value: String) -> Result<Originator, SetOriginatorError> {
+    HeaderValue::from_str(&value)
+        .map(|header_value| Originator {
+            value,
+            header_value,
+        })
+        .map_err(|_| SetOriginatorError::InvalidHeaderValue)
+}
+
+pub fn client_identity_from_parts(
+    originator_value: String,
+    user_agent_suffix: Option<String>,
+) -> Result<ClientIdentity, SetOriginatorError> {
+    Ok(ClientIdentity {
+        originator: originator_from_value(originator_value)?,
+        user_agent_suffix,
+    })
+}
+
 pub fn set_default_originator(value: String) -> Result<(), SetOriginatorError> {
     if HeaderValue::from_str(&value).is_err() {
         return Err(SetOriginatorError::InvalidHeaderValue);
@@ -99,6 +130,11 @@ pub fn set_default_client_residency_requirement(enforce_residency: Option<Reside
 }
 
 pub fn originator() -> Originator {
+    if let Ok(originator) = SCOPED_CLIENT_IDENTITY.try_with(|identity| identity.originator.clone())
+    {
+        return originator;
+    }
+
     if let Ok(guard) = ORIGINATOR.read()
         && let Some(originator) = guard.as_ref()
     {
@@ -119,6 +155,17 @@ pub fn originator() -> Originator {
     get_originator_value(/*provided*/ None)
 }
 
+pub fn scoped_client_identity() -> Option<ClientIdentity> {
+    SCOPED_CLIENT_IDENTITY.try_with(Clone::clone).ok()
+}
+
+pub async fn with_client_identity<F>(identity: ClientIdentity, future: F) -> F::Output
+where
+    F: Future,
+{
+    SCOPED_CLIENT_IDENTITY.scope(identity, future).await
+}
+
 pub fn is_first_party_originator(originator_value: &str) -> bool {
     originator_value == DEFAULT_ORIGINATOR
         || originator_value == "codex-tui"
@@ -131,9 +178,28 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
+    if let Some(identity) = scoped_client_identity() {
+        return get_codex_user_agent_for_identity(&identity);
+    }
+
+    let originator = originator();
+    let suffix = USER_AGENT_SUFFIX
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    get_codex_user_agent_for_originator(&originator, suffix.as_deref())
+}
+
+pub fn get_codex_user_agent_for_identity(identity: &ClientIdentity) -> String {
+    get_codex_user_agent_for_originator(&identity.originator, identity.user_agent_suffix.as_deref())
+}
+
+pub fn get_codex_user_agent_for_originator(
+    originator: &Originator,
+    user_agent_suffix: Option<&str>,
+) -> String {
     let build_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
-    let originator = originator();
     let prefix = format!(
         "{}/{build_version} ({} {}; {}) {}",
         originator.value.as_str(),
@@ -142,12 +208,7 @@ pub fn get_codex_user_agent() -> String {
         os_info.architecture().unwrap_or("unknown"),
         user_agent()
     );
-    let suffix = USER_AGENT_SUFFIX
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
-    let suffix = suffix
-        .as_deref()
+    let suffix = user_agent_suffix
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map_or_else(String::new, |value| format!(" ({value})"));
@@ -215,6 +276,21 @@ pub fn build_reqwest_client() -> reqwest::Client {
     })
 }
 
+pub fn build_reqwest_client_for_identity(identity: &ClientIdentity) -> reqwest::Client {
+    try_build_reqwest_client_for_identity(identity).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "failed to build default reqwest client");
+        with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder())
+            .build()
+            .unwrap_or_else(|fallback_error| {
+                tracing::warn!(
+                    error = %fallback_error,
+                    "failed to build fallback reqwest client with ChatGPT Cloudflare cookie store"
+                );
+                reqwest::Client::new()
+            })
+    })
+}
+
 /// Tries to build the default reqwest client used for ordinary Codex HTTP traffic.
 ///
 /// Callers that need a structured CA-loading failure instead of the legacy logged fallback can use
@@ -229,10 +305,40 @@ pub fn try_build_reqwest_client() -> Result<reqwest::Client, BuildCustomCaTransp
     build_reqwest_client_with_custom_ca(builder)
 }
 
+pub fn try_build_reqwest_client_for_identity(
+    identity: &ClientIdentity,
+) -> Result<reqwest::Client, BuildCustomCaTransportError> {
+    let mut builder =
+        reqwest::Client::builder().default_headers(default_headers_for_identity(identity));
+    if is_sandboxed() {
+        builder = builder.no_proxy();
+    }
+    builder = with_chatgpt_cloudflare_cookie_store(builder);
+
+    build_reqwest_client_with_custom_ca(builder)
+}
+
 pub fn default_headers() -> HeaderMap {
+    if let Some(identity) = scoped_client_identity() {
+        return default_headers_for_identity(&identity);
+    }
+
+    let originator = originator();
+    let user_agent = get_codex_user_agent();
+    default_headers_for_originator(&originator, Some(user_agent.as_str()))
+}
+
+pub fn default_headers_for_identity(identity: &ClientIdentity) -> HeaderMap {
+    let user_agent = get_codex_user_agent_for_identity(identity);
+    default_headers_for_originator(&identity.originator, Some(user_agent.as_str()))
+}
+
+fn default_headers_for_originator(originator: &Originator, user_agent: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert("originator", originator().header_value);
-    if let Ok(user_agent) = HeaderValue::from_str(&get_codex_user_agent()) {
+    headers.insert("originator", originator.header_value.clone());
+    if let Some(user_agent) = user_agent
+        && let Ok(user_agent) = HeaderValue::from_str(user_agent)
+    {
         headers.insert(USER_AGENT, user_agent);
     }
     if let Ok(guard) = REQUIREMENTS_RESIDENCY.read()
