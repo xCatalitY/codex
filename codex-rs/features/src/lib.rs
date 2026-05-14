@@ -196,8 +196,6 @@ pub enum Feature {
     ImageGeneration,
     /// Allow prompting and installing missing MCP dependencies.
     SkillMcpDependencyInstall,
-    /// Prompt for missing skill env var dependencies.
-    SkillEnvVarDependencyPrompt,
     /// Enable the unified mention popup prototype.
     MentionsV2,
     /// Steer feature flag - when enabled, Enter submits immediately instead of queuing.
@@ -1030,12 +1028,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "skill_mcp_dependency_install",
         stage: Stage::Stable,
         default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::SkillEnvVarDependencyPrompt,
-        key: "skill_env_var_dependency_prompt",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::MentionsV2,

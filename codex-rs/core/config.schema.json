@@ -547,9 +547,6 @@
             "shell_zsh_fork": {
               "type": "boolean"
             },
-            "skill_env_var_dependency_prompt": {
-              "type": "boolean"
-            },
             "skill_mcp_dependency_install": {
               "type": "boolean"
             },
@@ -4279,9 +4276,6 @@
           "type": "boolean"
         },
         "shell_zsh_fork": {
-          "type": "boolean"
-        },
-        "skill_env_var_dependency_prompt": {
           "type": "boolean"
         },
         "skill_mcp_dependency_install": {
