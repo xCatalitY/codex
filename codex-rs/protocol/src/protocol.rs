@@ -2827,6 +2827,7 @@ pub struct TurnContextItem {
     pub realtime_active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
+    pub summary: ReasoningSummaryConfig,
 }
 
 impl TurnContextItem {
@@ -5189,6 +5190,7 @@ mod tests {
             collaboration_mode: None,
             realtime_active: None,
             effort: None,
+            summary: ReasoningSummaryConfig::Auto,
         };
 
         let value = serde_json::to_value(item)?;
