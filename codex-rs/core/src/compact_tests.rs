@@ -2,6 +2,8 @@ use super::*;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItemMetadata;
 use pretty_assertions::assert_eq;
 
@@ -39,6 +41,37 @@ fn user_message(text: &str) -> ResponseItem {
 fn compacted_user_message(text: &str) -> CompactedUserMessage {
     CompactedUserMessage {
         message: text.to_string(),
+        metadata: None,
+    }
+}
+
+fn assistant_message(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    }
+}
+
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+        metadata: None,
+    }
+}
+
+fn function_call_output(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text("tool output".to_string()),
         metadata: None,
     }
 }
@@ -176,6 +209,7 @@ fn build_token_limited_compacted_history_truncates_overlong_user_messages() {
         Vec::new(),
         std::slice::from_ref(&user_message),
         "SUMMARY",
+        Vec::new(),
         max_tokens,
     );
     assert_eq!(history.len(), 2);
@@ -246,6 +280,91 @@ fn build_compacted_history_preserves_user_message_metadata() {
 
     assert_eq!(history[0].turn_id(), Some("turn-1"));
     assert_eq!(history[1].turn_id(), None);
+}
+
+#[test]
+fn collect_recent_context_tail_preserves_latest_user_and_outputs() {
+    let latest_user = user_message("latest user");
+    let reasoning = ResponseItem::Reasoning {
+        id: "rs_1".to_string(),
+        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+            text: "thinking".to_string(),
+        }],
+        content: None,
+        encrypted_content: None,
+        metadata: None,
+    };
+    let tool_call = function_call("call_1");
+    let tool_output = function_call_output("call_1");
+    let final_message = assistant_message("done");
+    let items = vec![
+        user_message("older user"),
+        assistant_message("older answer"),
+        latest_user.clone(),
+        reasoning.clone(),
+        tool_call.clone(),
+        tool_output.clone(),
+        final_message.clone(),
+    ];
+
+    let tail = collect_recent_context_tail(&items);
+
+    assert_eq!(
+        tail,
+        vec![
+            latest_user,
+            reasoning,
+            tool_call,
+            tool_output,
+            final_message
+        ]
+    );
+}
+
+#[test]
+fn retain_complete_tool_pairs_drops_orphaned_tool_items() {
+    let final_message = assistant_message("done");
+    let retained = retain_complete_tool_pairs(vec![
+        function_call_output("orphaned_output"),
+        final_message.clone(),
+        function_call("paired"),
+        function_call_output("paired"),
+        function_call("orphaned_call"),
+    ]);
+
+    assert_eq!(
+        retained,
+        vec![
+            final_message,
+            function_call("paired"),
+            function_call_output("paired")
+        ]
+    );
+}
+
+#[test]
+fn build_compacted_history_with_recent_tail_deduplicates_latest_user() {
+    let latest_user = user_message("latest user");
+    let final_message = assistant_message("latest answer");
+    let history = build_compacted_history_with_recent_tail(
+        Vec::new(),
+        &[
+            compacted_user_message("older user"),
+            compacted_user_message("latest user"),
+        ],
+        "SUMMARY",
+        vec![latest_user.clone(), final_message.clone()],
+    );
+
+    assert_eq!(
+        history,
+        vec![
+            user_message("older user"),
+            user_message("SUMMARY"),
+            latest_user,
+            final_message,
+        ]
+    );
 }
 
 #[test]

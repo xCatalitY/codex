@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::context_manager::estimate_item_token_count;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -27,6 +29,8 @@ use codex_analytics::CompactionTrigger;
 use codex_analytics::now_unix_seconds;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
@@ -50,6 +54,12 @@ use codex_model_provider_info::ModelProviderInfo;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+const COMPACT_RECENT_OUTPUT_ITEMS_MAX: usize = 16;
+const COMPACT_RECENT_OUTPUT_MAX_TOKENS: i64 = 20_000;
+
+pub(crate) fn summary_prefix() -> &'static str {
+    SUMMARY_PREFIX.trim_end()
+}
 
 /// Controls whether compaction replacement history must include initial context.
 ///
@@ -57,9 +67,9 @@ const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 /// clear `reference_context_item`, so the next regular turn will fully reinject initial context
 /// after compaction.
 ///
-/// Mid-turn compaction must use `BeforeLastUserMessage` because the model is trained to see the
-/// compaction summary as the last item in history after mid-turn compaction; we therefore inject
-/// initial context into the replacement history just above the last real user message.
+/// Mid-turn compaction must use `BeforeLastUserMessage` so fresh canonical context is placed before
+/// the latest real user message while preserved reasoning/tool/output tail items stay adjacent to
+/// that user turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InitialContextInjection {
     BeforeLastUserMessage,
@@ -212,6 +222,7 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    let pre_compaction_history_items = history.raw_items().to_vec();
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info.truncation_policy.into(),
@@ -298,10 +309,16 @@ async fn run_compact_task_inner_impl(
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
     let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-    let user_messages = collect_user_messages(history_items);
+    let summary_text = format!("{}\n{summary_suffix}", summary_prefix());
+    let user_messages = collect_user_messages(&pre_compaction_history_items);
+    let recent_tail = collect_recent_context_tail(&pre_compaction_history_items);
 
-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+    let mut new_history = build_compacted_history_with_recent_tail(
+        Vec::new(),
+        &user_messages,
+        &summary_text,
+        recent_tail,
+    );
     let window_id = sess.advance_auto_compact_window_id().await;
 
     if matches!(
@@ -326,6 +343,12 @@ async fn run_compact_task_inner_impl(
     sess.recompute_token_usage(&turn_context).await;
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
+        .await;
+    let summary_item =
+        TurnItem::AgentMessage(AgentMessageItem::new(&[AgentMessageContent::Text {
+            text: summary_text.clone(),
+        }]));
+    sess.emit_turn_item_completed(&turn_context, summary_item)
         .await;
     let warning = EventMsg::Warning(WarningEvent {
         message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
@@ -455,29 +478,166 @@ pub(crate) struct CompactedUserMessage {
 }
 
 pub(crate) fn collect_user_messages(items: &[ResponseItem]) -> Vec<CompactedUserMessage> {
-    items
+    items.iter().filter_map(real_user_message).collect()
+}
+
+fn collect_recent_context_tail(items: &[ResponseItem]) -> Vec<ResponseItem> {
+    let Some(last_user_index) = items
         .iter()
-        .filter_map(|item| match crate::event_mapping::parse_turn_item(item) {
-            Some(TurnItem::UserMessage(user)) => {
-                if is_summary_message(&user.message()) {
-                    None
-                } else {
-                    Some(CompactedUserMessage {
-                        message: user.message(),
-                        metadata: match item {
-                            ResponseItem::Message { metadata, .. } => metadata.clone(),
-                            _ => None,
-                        },
-                    })
-                }
-            }
-            _ => None,
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| real_user_message_text(item).is_some().then_some(index))
+    else {
+        return Vec::new();
+    };
+
+    let mut selected_outputs = Vec::new();
+    let mut remaining_tokens = COMPACT_RECENT_OUTPUT_MAX_TOKENS;
+    for item in items[last_user_index + 1..].iter().rev() {
+        if !is_recent_output_item(item) {
+            continue;
+        }
+        if selected_outputs.len() >= COMPACT_RECENT_OUTPUT_ITEMS_MAX {
+            break;
+        }
+
+        let item_tokens = estimate_item_token_count(item);
+        if item_tokens > remaining_tokens {
+            break;
+        }
+        remaining_tokens = remaining_tokens.saturating_sub(item_tokens.max(0));
+        selected_outputs.push(item.clone());
+    }
+    selected_outputs.reverse();
+    let selected_outputs = retain_complete_tool_pairs(selected_outputs);
+
+    let mut recent_tail = Vec::with_capacity(selected_outputs.len() + 1);
+    recent_tail.push(items[last_user_index].clone());
+    recent_tail.extend(selected_outputs);
+    recent_tail
+}
+
+fn real_user_message(item: &ResponseItem) -> Option<CompactedUserMessage> {
+    match crate::event_mapping::parse_turn_item(item) {
+        Some(TurnItem::UserMessage(user)) => {
+            let message = user.message();
+            (!is_summary_message(&message)).then(|| CompactedUserMessage {
+                message,
+                metadata: match item {
+                    ResponseItem::Message { metadata, .. } => metadata.clone(),
+                    _ => None,
+                },
+            })
+        }
+        Some(
+            TurnItem::HookPrompt(_)
+            | TurnItem::AgentMessage(_)
+            | TurnItem::Plan(_)
+            | TurnItem::WebSearch(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::Sleep(_)
+            | TurnItem::ImageGeneration(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
+            | TurnItem::Reasoning(_)
+            | TurnItem::ContextCompaction(_),
+        )
+        | None => None,
+    }
+}
+
+fn real_user_message_text(item: &ResponseItem) -> Option<String> {
+    real_user_message(item).map(|message| message.message)
+}
+
+fn is_recent_output_item(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { role, .. } => role == "assistant",
+        ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. } => true,
+        ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => false,
+    }
+}
+
+fn retain_complete_tool_pairs(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    let call_ids: HashSet<String> = items
+        .iter()
+        .filter_map(tool_call_id)
+        .map(str::to_string)
+        .collect();
+    let output_call_ids: HashSet<String> = items
+        .iter()
+        .filter_map(tool_output_call_id)
+        .map(str::to_string)
+        .collect();
+
+    items
+        .into_iter()
+        .filter(|item| {
+            tool_call_id(item).is_none_or(|call_id| output_call_ids.contains(call_id))
+                && tool_output_call_id(item).is_none_or(|call_id| call_ids.contains(call_id))
         })
         .collect()
 }
 
+fn tool_call_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id.as_str()),
+        ResponseItem::ToolSearchCall { call_id, .. } => call_id.as_deref(),
+        ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => None,
+    }
+}
+
+fn tool_output_call_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id.as_str()),
+        ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
+        ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::Compaction { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::Other => None,
+    }
+}
+
 pub(crate) fn is_summary_message(message: &str) -> bool {
-    message.starts_with(format!("{SUMMARY_PREFIX}\n").as_str())
+    message
+        .strip_prefix(summary_prefix())
+        .is_some_and(|suffix| suffix.starts_with('\n'))
 }
 
 /// Inserts canonical initial context into compacted replacement history at the
@@ -546,6 +706,22 @@ pub(crate) fn build_compacted_history(
         initial_context,
         user_messages,
         summary_text,
+        Vec::new(),
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    )
+}
+
+fn build_compacted_history_with_recent_tail(
+    initial_context: Vec<ResponseItem>,
+    user_messages: &[CompactedUserMessage],
+    summary_text: &str,
+    recent_tail: Vec<ResponseItem>,
+) -> Vec<ResponseItem> {
+    build_compacted_history_with_limit(
+        initial_context,
+        user_messages,
+        summary_text,
+        recent_tail,
         COMPACT_USER_MESSAGE_MAX_TOKENS,
     )
 }
@@ -554,8 +730,21 @@ fn build_compacted_history_with_limit(
     mut history: Vec<ResponseItem>,
     user_messages: &[CompactedUserMessage],
     summary_text: &str,
+    recent_tail: Vec<ResponseItem>,
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
+    let recent_tail_user_message = recent_tail.first().and_then(real_user_message_text);
+    let user_messages = match recent_tail_user_message.as_deref() {
+        Some(tail_user_message)
+            if user_messages
+                .last()
+                .is_some_and(|last| last.message.as_str() == tail_user_message) =>
+        {
+            &user_messages[..user_messages.len().saturating_sub(1)]
+        }
+        _ => user_messages,
+    };
+
     let mut selected_messages: Vec<CompactedUserMessage> = Vec::new();
     if max_tokens > 0 {
         let mut remaining = max_tokens;
@@ -605,6 +794,7 @@ fn build_compacted_history_with_limit(
         phase: None,
         metadata: None,
     });
+    history.extend(recent_tail);
 
     history
 }
