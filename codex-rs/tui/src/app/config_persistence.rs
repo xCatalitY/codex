@@ -267,25 +267,11 @@ impl App {
             next_config = feature_config;
             feature_updates_to_apply.push((feature, effective_enabled));
             config_edits.extend(feature_edits);
-            let feature_key_path = if let Some(profile) = active_profile.as_deref() {
-                format!("profiles.{profile}.features.{feature_key}")
-            } else {
-                format!("features.{feature_key}")
-            };
-            let is_default_false_feature = FEATURES
-                .iter()
-                .find(|spec| spec.key == feature_key)
-                .is_some_and(|spec| !spec.default_enabled);
-            config_edits.push(
-                if effective_enabled || active_profile.is_some() || !is_default_false_feature {
-                    crate::config_update::replace_config_value(
-                        feature_key_path,
-                        serde_json::json!(effective_enabled),
-                    )
-                } else {
-                    crate::config_update::clear_config_value(feature_key_path)
-                },
-            );
+            config_edits.push(crate::config_update::build_feature_enabled_edit(
+                active_profile.as_deref(),
+                feature_key,
+                effective_enabled,
+            ));
         }
 
         // Persist first so the live session does not diverge from disk if the
@@ -410,24 +396,11 @@ impl App {
         use_memories: bool,
         generate_memories: bool,
     ) -> bool {
-        let active_profile = self.active_profile.clone();
-        let scoped_memory_key_path = |key: &str| {
-            if let Some(profile) = active_profile.as_deref() {
-                format!("profiles.{profile}.memories.{key}")
-            } else {
-                format!("memories.{key}")
-            }
-        };
-        let edits = vec![
-            crate::config_update::replace_config_value(
-                scoped_memory_key_path("use_memories"),
-                serde_json::json!(use_memories),
-            ),
-            crate::config_update::replace_config_value(
-                scoped_memory_key_path("generate_memories"),
-                serde_json::json!(generate_memories),
-            ),
-        ];
+        let edits = crate::config_update::build_memory_settings_edits(
+            self.active_profile.as_deref(),
+            use_memories,
+            generate_memories,
+        );
 
         if let Err(err) =
             crate::config_update::write_config_batch(app_server.request_handle(), edits).await
