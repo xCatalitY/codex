@@ -505,7 +505,7 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<BlockingLruCache<[u8; 20], Option
         )
     });
 
-fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
+pub(crate) fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
     match item {
         ResponseItem::Reasoning {
             encrypted_content: Some(content),
