@@ -534,7 +534,8 @@ fn real_user_message_text(item: &ResponseItem) -> Option<String> {
 fn is_recent_output_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } => role == "assistant",
-        ResponseItem::Reasoning { .. }
+        ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::ToolSearchCall { .. }
@@ -578,6 +579,7 @@ fn tool_call_id(item: &ResponseItem) -> Option<&str> {
         | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id.as_str()),
         ResponseItem::ToolSearchCall { call_id, .. } => call_id.as_deref(),
         ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
@@ -598,6 +600,7 @@ fn tool_output_call_id(item: &ResponseItem) -> Option<&str> {
         | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id.as_str()),
         ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
         ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
         | ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
