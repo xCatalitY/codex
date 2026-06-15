@@ -167,6 +167,12 @@ pub enum GuardianAssessmentAction {
         reason: Option<String>,
         permissions: RequestPermissionProfile,
     },
+    Workflow {
+        workflow_name: String,
+        source_kind: String,
+        source_name: String,
+        metadata_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]

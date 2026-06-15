@@ -410,15 +410,19 @@ impl App {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         if !self.config.features.enabled(Feature::Plugins) {
-            app_event_tx.send(AppEvent::PluginMentionsLoaded { plugins: None });
+            app_event_tx.send(AppEvent::PluginMentionsLoaded {
+                plugins: None,
+                workflow_dirs: Vec::new(),
+            });
             return;
         }
 
         tokio::spawn(async move {
             match fetch_plugin_mentions(request_handle, cwd).await {
-                Ok(plugins) => {
+                Ok(refresh) => {
                     app_event_tx.send(AppEvent::PluginMentionsLoaded {
-                        plugins: Some(plugins),
+                        plugins: Some(refresh.plugins),
+                        workflow_dirs: refresh.workflow_dirs,
                     });
                 }
                 Err(err) => {
@@ -1048,6 +1052,7 @@ mod tests {
             ],
             marketplace_load_errors: Vec::new(),
             featured_plugin_ids: Vec::new(),
+            workflow_directories: Vec::new(),
         };
 
         hide_cli_only_plugin_marketplaces(&mut response);

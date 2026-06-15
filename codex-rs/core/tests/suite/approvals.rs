@@ -673,6 +673,7 @@ async fn submit_turn(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -2634,6 +2635,7 @@ async fn env_zsh_script_spawned_by_python_can_request_escalation_under_zsh_fork(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -2778,6 +2780,7 @@ async fn matched_prefix_rule_runs_unsandboxed_under_zsh_fork() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -3369,6 +3372,7 @@ allow_local_binding = true
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

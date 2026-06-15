@@ -176,6 +176,17 @@ pub struct PluginListResponse {
     pub marketplace_load_errors: Vec<MarketplaceLoadErrorInfo>,
     #[serde(default)]
     pub featured_plugin_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflow_directories: Vec<PluginWorkflowDirectorySummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginWorkflowDirectorySummary {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub path: AbsolutePathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

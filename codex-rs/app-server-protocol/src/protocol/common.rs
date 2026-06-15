@@ -573,6 +573,36 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
     },
+    #[experimental("thread/workflow/cancel")]
+    ThreadWorkflowCancel => "thread/workflow/cancel" {
+        params: v2::ThreadWorkflowCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowCancelResponse,
+    },
+    #[experimental("thread/workflow/pause")]
+    ThreadWorkflowPause => "thread/workflow/pause" {
+        params: v2::ThreadWorkflowPauseParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowPauseResponse,
+    },
+    #[experimental("thread/workflow/continue")]
+    ThreadWorkflowContinue => "thread/workflow/continue" {
+        params: v2::ThreadWorkflowContinueParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowContinueResponse,
+    },
+    #[experimental("thread/workflow/agent/interrupt")]
+    ThreadWorkflowAgentInterrupt => "thread/workflow/agent/interrupt" {
+        params: v2::ThreadWorkflowAgentInterruptParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowAgentInterruptResponse,
+    },
+    #[experimental("thread/workflow/agent/control")]
+    ThreadWorkflowAgentControl => "thread/workflow/agent/control" {
+        params: v2::ThreadWorkflowAgentControlParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowAgentControlResponse,
+    },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
         serialization: thread_id(params.thread_id),
@@ -1569,6 +1599,9 @@ server_notification_definitions! {
     AgentMessageDelta => "item/agentMessage/delta" (v2::AgentMessageDeltaNotification),
     /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
     PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
+    /// EXPERIMENTAL - workflow runtime progress emitted by the workflow tool.
+    #[experimental("workflow/progress")]
+    WorkflowProgress => "workflow/progress" (v2::WorkflowProgressNotification),
     /// Stream base64-encoded stdout/stderr chunks for a running `command/exec` session.
     CommandExecOutputDelta => "command/exec/outputDelta" (v2::CommandExecOutputDeltaNotification),
     /// Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.
@@ -3355,6 +3388,7 @@ mod tests {
                             model: "gpt-5.4".to_string(),
                             reasoning_effort: None,
                             developer_instructions: None,
+                            workflow_mode: None,
                         },
                     },
                     personality: None,

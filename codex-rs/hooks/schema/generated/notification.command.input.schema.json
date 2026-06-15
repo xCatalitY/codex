@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "NullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "agent_type": {
+      "type": "string"
+    },
+    "cell_id": {
+      "type": "string"
+    },
+    "child": {
+      "type": "string"
+    },
+    "child_index": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "child_run_id": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "data": true,
+    "error": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    },
+    "hook_event_name": {
+      "const": "Notification",
+      "type": "string"
+    },
+    "item_index": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "message": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "notification_type": {
+      "const": "workflow_progress",
+      "type": "string"
+    },
+    "permission_mode": {
+      "enum": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "dontAsk",
+        "bypassPermissions"
+      ],
+      "type": "string"
+    },
+    "phase": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "stage_index": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "step_index": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "transcript_path": {
+      "$ref": "#/definitions/NullableString"
+    },
+    "turn_id": {
+      "description": "Codex extension: expose the active turn id to internal turn-scoped hooks.",
+      "type": "string"
+    },
+    "unix_ms": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "workflow": {
+      "type": "string"
+    },
+    "workflow_agent_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "cell_id",
+    "cwd",
+    "event",
+    "hook_event_name",
+    "model",
+    "notification_type",
+    "permission_mode",
+    "run_id",
+    "session_id",
+    "transcript_path",
+    "turn_id",
+    "unix_ms"
+  ],
+  "title": "notification.command.input",
+  "type": "object"
+}

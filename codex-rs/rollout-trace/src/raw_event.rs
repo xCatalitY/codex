@@ -2,6 +2,7 @@
 
 use crate::model::AgentThreadId;
 use crate::model::CodeCellRuntimeStatus;
+use crate::model::CodeCellWorkflowProgress;
 use crate::model::CodexTurnId;
 use crate::model::CompactionId;
 use crate::model::CompactionRequestId;
@@ -180,6 +181,11 @@ pub enum RawTraceEventPayload {
         status: CodeCellRuntimeStatus,
         response_payload: Option<RawPayloadRef>,
     },
+    CodeCellWorkflowProgress {
+        /// Runtime-local handle, matching `CodeCellStarted`.
+        runtime_cell_id: String,
+        progress: CodeCellWorkflowProgress,
+    },
     CompactionRequestStarted {
         compaction_id: CompactionId,
         compaction_request_id: CompactionRequestId,
@@ -242,6 +248,7 @@ impl RawTraceEventPayload {
             | RawTraceEventPayload::CodexTurnEnded { .. }
             | RawTraceEventPayload::CompactionRequestFailed { .. }
             | RawTraceEventPayload::CodeCellStarted { .. }
+            | RawTraceEventPayload::CodeCellWorkflowProgress { .. }
             | RawTraceEventPayload::McpToolCallCorrelationAssigned { .. }
             | RawTraceEventPayload::AgentResultObserved {
                 carried_payload: None,

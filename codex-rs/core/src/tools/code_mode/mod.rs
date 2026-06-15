@@ -30,6 +30,7 @@ use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::unified_exec::resolve_max_tokens;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -41,6 +42,20 @@ use delegate::CodeModeDispatchWorker;
 pub(crate) use execute_handler::CodeModeExecuteHandler;
 use response_adapter::into_function_call_output_content_items;
 pub(crate) use wait_handler::CodeModeWaitHandler;
+pub(crate) use wait_handler::WorkflowAgentTranscriptEnvelope;
+pub(crate) use wait_handler::WorkflowAgentTranscriptTarget;
+pub(crate) use wait_handler::WorkflowProgressUpdate;
+pub(crate) use wait_handler::WorkflowRunCellState;
+pub(crate) use wait_handler::WorkflowWaitUpdate;
+pub(crate) use wait_handler::active_workflow_run_for_cell;
+pub(crate) use wait_handler::append_workflow_agent_transcript_lines_to_target;
+pub(crate) use wait_handler::record_workflow_agent_control_event;
+pub(crate) use wait_handler::running_workflow_agent_for_run;
+pub(crate) use wait_handler::update_workflow_snapshot_for_notify;
+pub(crate) use wait_handler::update_workflow_snapshot_for_pause;
+pub(crate) use wait_handler::update_workflow_snapshot_for_wait;
+pub(crate) use wait_handler::workflow_agent_control_request_for_run;
+pub(crate) use wait_handler::workflow_agent_transcript_target_for_cell;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
 pub(crate) const WAIT_TOOL_NAME: &str = codex_code_mode::WAIT_TOOL_NAME;
@@ -87,6 +102,20 @@ impl CodeModeService {
         self.session()?.wait(request).await
     }
 
+    pub(crate) async fn wait_to_pending(
+        &self,
+        request: codex_code_mode::WaitToPendingRequest,
+    ) -> Result<codex_code_mode::WaitToPendingOutcome, String> {
+        self.session()?.wait_to_pending(request).await
+    }
+
+    pub(crate) async fn pause_to_pending(
+        &self,
+        cell_id: CellId,
+    ) -> Result<codex_code_mode::WaitToPendingOutcome, String> {
+        self.session()?.pause_to_pending(cell_id).await
+    }
+
     pub(crate) async fn terminate(
         &self,
         cell_id: CellId,
@@ -116,7 +145,10 @@ impl CodeModeService {
         router: Arc<ToolRouter>,
         tracker: SharedTurnDiffTracker,
     ) -> Option<CodeModeDispatchWorker> {
-        if !matches!(turn.tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
+        let workflow_runtime_enabled =
+            turn.collaboration_mode.workflow_mode() != WorkflowMode::Disabled;
+        if !(matches!(turn.tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
+            || workflow_runtime_enabled)
             || self.session.is_none()
         {
             return None;

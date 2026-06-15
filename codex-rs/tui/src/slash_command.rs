@@ -13,6 +13,10 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Effort,
+    Workflow,
+    Workflows,
+    Config,
     Ide,
     Permissions,
     Keymap,
@@ -116,6 +120,10 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Effort => "set reasoning effort; use ultracode for xhigh plus workflows",
+            SlashCommand::Workflow => "toggle dynamic workflow mode",
+            SlashCommand::Workflows => "browse workflow library and recent runs",
+            SlashCommand::Config => "configure workflow defaults and ultracode keyword trigger",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -160,6 +168,9 @@ impl SlashCommand {
             SlashCommand::Review
                 | SlashCommand::Rename
                 | SlashCommand::Plan
+                | SlashCommand::Effort
+                | SlashCommand::Workflow
+                | SlashCommand::Workflows
                 | SlashCommand::Goal
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -197,6 +208,9 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
+            | SlashCommand::Effort
+            | SlashCommand::Workflow
+            | SlashCommand::Config
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -220,6 +234,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Workflows
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -298,6 +313,13 @@ mod tests {
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+    }
+
+    #[test]
+    fn config_command_configures_workflows_and_waits_for_task_idle() {
+        assert_eq!(SlashCommand::Config.command(), "config");
+        assert!(!SlashCommand::Config.available_during_task());
+        assert!(!SlashCommand::Config.supports_inline_args());
     }
 
     #[test]

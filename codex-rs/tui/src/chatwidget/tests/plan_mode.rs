@@ -100,6 +100,129 @@ async fn plan_mode_nudge_shift_tab_uses_existing_mode_cycle_path() {
 }
 
 #[tokio::test]
+async fn workflow_keyword_nudge_shows_for_eligible_drafts() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_composer_text(
+        "please use ultracode for this".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.pre_draw_tick();
+    assert!(chat.bottom_pane.workflow_keyword_nudge_visible());
+    assert!(!chat.bottom_pane.plan_mode_nudge_visible());
+
+    chat.set_composer_text("/ultracode for this".to_string(), Vec::new(), Vec::new());
+    chat.pre_draw_tick();
+    assert!(!chat.bottom_pane.workflow_keyword_nudge_visible());
+
+    chat.set_composer_text(
+        "please use ultracode for this".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.config.workflows.keyword_trigger_enabled = false;
+    chat.pre_draw_tick();
+    assert!(!chat.bottom_pane.workflow_keyword_nudge_visible());
+}
+
+#[tokio::test]
+async fn workflow_keyword_nudge_esc_suppresses_one_turn_override() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_composer_text(
+        "please use ultracode for this".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.pre_draw_tick();
+    assert!(chat.bottom_pane.workflow_keyword_nudge_visible());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    chat.pre_draw_tick();
+    assert!(!chat.bottom_pane.workflow_keyword_nudge_visible());
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            effort,
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(None, effort);
+            if let Some(collaboration_mode) = collaboration_mode {
+                assert_eq!(WorkflowMode::Disabled, collaboration_mode.workflow_mode());
+                assert_eq!(None, collaboration_mode.reasoning_effort());
+            }
+        }
+        other => panic!("expected normal user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn workflow_keyword_nudge_alt_w_suppresses_one_turn_override() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_composer_text(
+        "please use ultracode for this".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.pre_draw_tick();
+    assert!(chat.bottom_pane.workflow_keyword_nudge_visible());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT));
+    chat.pre_draw_tick();
+    assert!(!chat.bottom_pane.workflow_keyword_nudge_visible());
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            effort,
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(None, effort);
+            if let Some(collaboration_mode) = collaboration_mode {
+                assert_eq!(WorkflowMode::Disabled, collaboration_mode.workflow_mode());
+                assert_eq!(None, collaboration_mode.reasoning_effort());
+            }
+        }
+        other => panic!("expected normal user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn workflow_keyword_submission_sets_ultracode_for_one_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_composer_text(
+        "please use ultracode for this".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            effort,
+            collaboration_mode,
+            ..
+        } => {
+            assert_eq!(Some(ReasoningEffortConfig::XHigh), effort);
+            let collaboration_mode = collaboration_mode.expect("ultracode collaboration mode");
+            assert_eq!(WorkflowMode::Ultracode, collaboration_mode.workflow_mode());
+            assert_eq!(
+                Some(ReasoningEffortConfig::XHigh),
+                collaboration_mode.reasoning_effort()
+            );
+        }
+        other => panic!("expected ultracode user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn plan_mode_nudge_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.set_token_info(Some(make_token_info(

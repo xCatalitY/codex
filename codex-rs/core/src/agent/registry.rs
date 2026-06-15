@@ -4,10 +4,12 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use rand::prelude::IndexedRandom;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -39,6 +41,15 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) last_task_message: Option<String>,
+    pub(crate) workflow_worktree: Option<WorkflowAgentWorktree>,
+    pub(crate) workflow_transcript_path: Option<PathBuf>,
+    pub(crate) workflow_transcript_mirror_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkflowAgentWorktree {
+    pub(crate) path: AbsolutePathBuf,
+    pub(crate) repo_root: AbsolutePathBuf,
 }
 
 fn format_agent_nickname(name: &str, nickname_reset_count: usize) -> String {

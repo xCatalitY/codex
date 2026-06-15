@@ -147,6 +147,21 @@ impl ChatWidget {
             return;
         }
 
+        if key_hint::alt(KeyCode::Char('w')).is_press(key_event)
+            && self.should_show_workflow_keyword_nudge()
+        {
+            self.dismiss_workflow_keyword_nudge();
+            return;
+        }
+
+        if matches!(key_event.code, KeyCode::Esc)
+            && key_event.kind == KeyEventKind::Press
+            && self.should_show_workflow_keyword_nudge()
+        {
+            self.dismiss_workflow_keyword_nudge();
+            return;
+        }
+
         if self.handle_plugins_popup_key_event(key_event) {
             return;
         }

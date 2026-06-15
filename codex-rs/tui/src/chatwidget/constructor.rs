@@ -54,6 +54,8 @@ impl ChatWidget {
             model: header_model.clone(),
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         };
         // Collaboration modes start in Default mode.
         let current_collaboration_mode = CollaborationMode {
@@ -174,6 +176,7 @@ impl ChatWidget {
             pet_image_support_override: None,
             thread_id: None,
             dismissed_plan_mode_nudge_scopes: HashSet::new(),
+            suppressed_workflow_keyword_nudge: None,
             thread_name: None,
             thread_rename_block_message: None,
             active_side_conversation: false,
@@ -243,6 +246,7 @@ impl ChatWidget {
             .bottom_pane
             .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_service_tier_commands();
+        widget.sync_workflow_slash_commands();
         widget.sync_personality_command_enabled();
         widget.sync_plugins_command_enabled();
         widget.sync_goal_command_enabled();

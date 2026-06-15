@@ -2,10 +2,13 @@ use super::*;
 use crate::SkillLoadOutcome;
 use crate::agents_md::LoadedAgentsMd;
 use crate::config::GhostSnapshotConfig;
+use crate::config::WorkflowPluginDirectory;
 use crate::environment_selection::ResolvedTurnEnvironments;
+use codex_core_plugins::PluginLoadOutcome;
 use codex_core_skills::HostLoadedSkills;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
+use codex_plugin::PluginId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -32,6 +35,58 @@ impl TurnSkillsContext {
             outcome,
             implicit_invocation_seen_skills: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_core_plugins::LoadedPlugin;
+    use codex_utils_absolute_path::test_support::PathExt as _;
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    fn loaded_plugin(config_name: &str, root: AbsolutePathBuf, enabled: bool) -> LoadedPlugin {
+        LoadedPlugin {
+            config_name: config_name.to_string(),
+            manifest_name: None,
+            manifest_description: None,
+            root,
+            enabled,
+            skill_roots: Vec::new(),
+            disabled_skill_paths: HashSet::new(),
+            has_enabled_skills: false,
+            mcp_servers: HashMap::new(),
+            apps: Vec::new(),
+            hook_sources: Vec::new(),
+            hook_load_warnings: Vec::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn plugin_workflow_dirs_from_outcome_uses_active_plugin_workflows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let active_root = temp.path().join("plugins/cache/test/sample/local").abs();
+        let inactive_root = temp.path().join("plugins/cache/test/inactive/local").abs();
+        let missing_root = temp.path().join("plugins/cache/test/missing/local").abs();
+        std::fs::create_dir_all(active_root.join("workflows")).expect("active workflows");
+        std::fs::create_dir_all(inactive_root.join("workflows")).expect("inactive workflows");
+        std::fs::create_dir_all(&missing_root).expect("missing root");
+
+        let outcome = PluginLoadOutcome::from_plugins(vec![
+            loaded_plugin("sample@test", active_root.clone(), true),
+            loaded_plugin("inactive@test", inactive_root, false),
+            loaded_plugin("missing@test", missing_root, true),
+            loaded_plugin("invalid-key", temp.path().join("invalid").abs(), true),
+        ]);
+
+        let dirs = Session::plugin_workflow_dirs_from_outcome(&outcome);
+
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].namespace, "sample");
+        assert_eq!(dirs[0].plugin_id, "sample@test");
+        assert_eq!(dirs[0].dir, active_root.join("workflows"));
     }
 }
 
@@ -454,6 +509,37 @@ impl Session {
         config
     }
 
+    fn plugin_workflow_dirs_from_outcome(
+        plugin_outcome: &PluginLoadOutcome,
+    ) -> Vec<WorkflowPluginDirectory> {
+        let mut dirs = plugin_outcome
+            .plugins()
+            .iter()
+            .filter(|plugin| plugin.is_active())
+            .filter_map(|plugin| {
+                let plugin_id = PluginId::parse(&plugin.config_name).ok()?;
+                let dir = plugin.root.join("workflows");
+                dir.as_path().is_dir().then(|| WorkflowPluginDirectory {
+                    namespace: plugin_id.plugin_name,
+                    plugin_id: plugin.config_name.clone(),
+                    dir,
+                })
+            })
+            .collect::<Vec<_>>();
+        dirs.sort_unstable_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.plugin_id.cmp(&right.plugin_id))
+                .then(left.dir.as_path().cmp(right.dir.as_path()))
+        });
+        dirs.dedup_by(|left, right| {
+            left.namespace == right.namespace
+                && left.plugin_id == right.plugin_id
+                && left.dir.as_path() == right.dir.as_path()
+        });
+        dirs
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_turn_context(
         thread_id: ThreadId,
@@ -726,7 +812,7 @@ impl Session {
             .as_ref()
             .map(|turn_environment| turn_environment.cwd.clone())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = Self::build_per_turn_config(&session_configuration, cwd.clone());
+        let mut per_turn_config = Self::build_per_turn_config(&session_configuration, cwd.clone());
         {
             let mcp_connection_manager = self.services.mcp_connection_manager.load_full();
             mcp_connection_manager.set_approval_policy(&session_configuration.approval_policy);
@@ -757,6 +843,8 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&per_turn_config.plugins_config_input())
             .await;
+        per_turn_config.workflows.plugin_workflow_dirs =
+            Self::plugin_workflow_dirs_from_outcome(&plugin_outcome);
         let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
         let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
         let fs = primary_turn_environment
@@ -833,12 +921,21 @@ impl Session {
     }
 
     pub(crate) async fn new_default_turn_with_sub_id(&self, sub_id: String) -> Arc<TurnContext> {
+        self.new_default_turn_with_sub_id_and_final_output_json_schema(sub_id, None)
+            .await
+    }
+
+    pub(crate) async fn new_default_turn_with_sub_id_and_final_output_json_schema(
+        &self,
+        sub_id: String,
+        final_output_json_schema: Option<Value>,
+    ) -> Arc<TurnContext> {
         let (session_configuration, turn_environments) =
             self.default_turn_configuration_and_environments().await;
         self.new_turn_from_configuration(
             sub_id,
             session_configuration,
-            /*final_output_json_schema*/ None,
+            final_output_json_schema.map(Some),
             turn_environments,
         )
         .await

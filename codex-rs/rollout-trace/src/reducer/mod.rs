@@ -382,6 +382,28 @@ impl TraceReducer {
                     status,
                 )?;
             }
+            RawTraceEventPayload::CodeCellWorkflowProgress {
+                runtime_cell_id,
+                progress,
+            } => {
+                let thread_id = self.code_cell_event_thread_id(
+                    event.thread_id,
+                    event.codex_turn_id.as_deref(),
+                    &runtime_cell_id,
+                    "code cell workflow progress",
+                )?;
+                let code_cell_id = self.code_cell_id_for_runtime_cell_id(
+                    &thread_id,
+                    &runtime_cell_id,
+                    "code cell workflow progress",
+                )?;
+                self.record_or_queue_code_cell_workflow_progress(
+                    event.seq,
+                    event.wall_time_unix_ms,
+                    code_cell_id,
+                    progress,
+                )?;
+            }
             RawTraceEventPayload::CompactionRequestStarted {
                 compaction_id,
                 compaction_request_id,

@@ -123,6 +123,7 @@ async fn shell_command_tool_executes_command_and_streams_output() -> anyhow::Res
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -204,6 +205,7 @@ async fn update_plan_tool_emits_plan_update_event() -> anyhow::Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -295,6 +297,7 @@ async fn update_plan_tool_rejects_malformed_payload() -> anyhow::Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -396,6 +399,7 @@ async fn apply_patch_tool_executes_and_emits_patch_events() -> anyhow::Result<()
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -534,6 +538,7 @@ async fn apply_patch_reports_parse_diagnostics() -> anyhow::Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

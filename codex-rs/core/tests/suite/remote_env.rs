@@ -96,6 +96,7 @@ async fn submit_turn_with_approval_and_environments(
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

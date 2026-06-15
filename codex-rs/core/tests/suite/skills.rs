@@ -103,6 +103,7 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

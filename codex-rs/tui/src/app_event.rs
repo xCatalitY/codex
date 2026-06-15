@@ -38,12 +38,15 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
+use crate::legacy_core::config::WorkflowPluginDirectory;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
+use codex_config::types::WorkflowApproval;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_realtime_webrtc::RealtimeWebrtcEvent;
@@ -564,6 +567,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing plugin mention bindings.
     PluginMentionsLoaded {
         plugins: Option<Vec<PluginCapabilitySummary>>,
+        workflow_dirs: Vec<WorkflowPluginDirectory>,
     },
 
     /// Advance the post-install plugin app-auth flow.
@@ -812,6 +816,26 @@ pub(crate) enum AppEvent {
     UpdateMemorySettings {
         use_memories: bool,
         generate_memories: bool,
+    },
+
+    /// Update workflow defaults and persist them to config.toml.
+    UpdateWorkflowSettings {
+        enabled: bool,
+        mode: WorkflowMode,
+        approval: WorkflowApproval,
+        keyword_trigger_enabled: bool,
+    },
+
+    /// Update one named workflow approval override and persist it to config.toml.
+    UpdateNamedWorkflowApproval {
+        workflow_name: String,
+        approval: Option<WorkflowApproval>,
+    },
+
+    /// Update one named workflow enabled override and persist it to config.toml.
+    UpdateNamedWorkflowEnabled {
+        workflow_name: String,
+        enabled: Option<bool>,
     },
 
     /// Clear all persisted local memory artifacts via the app-server.

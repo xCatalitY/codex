@@ -21,6 +21,10 @@ use crate::events::stop::StopOutcome;
 use crate::events::stop::StopRequest;
 use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
+use crate::events::workflow::NotificationRequest;
+use crate::events::workflow::TaskCompletedRequest;
+use crate::events::workflow::TaskCreatedRequest;
+use crate::events::workflow::WorkflowHookOutcome;
 use crate::types::Hook;
 use crate::types::HookEvent;
 use crate::types::HookPayload;
@@ -177,6 +181,39 @@ impl Hooks {
 
     pub async fn run_post_compact(&self, request: PostCompactRequest) -> StatelessHookOutcome {
         self.engine.run_post_compact(request).await
+    }
+
+    pub fn preview_task_created(
+        &self,
+        request: &TaskCreatedRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_task_created(request)
+    }
+
+    pub async fn run_task_created(&self, request: TaskCreatedRequest) -> WorkflowHookOutcome {
+        self.engine.run_task_created(request).await
+    }
+
+    pub fn preview_task_completed(
+        &self,
+        request: &TaskCompletedRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_task_completed(request)
+    }
+
+    pub async fn run_task_completed(&self, request: TaskCompletedRequest) -> WorkflowHookOutcome {
+        self.engine.run_task_completed(request).await
+    }
+
+    pub fn preview_notification(
+        &self,
+        request: &NotificationRequest,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        self.engine.preview_notification(request)
+    }
+
+    pub async fn run_notification(&self, request: NotificationRequest) -> WorkflowHookOutcome {
+        self.engine.run_notification(request).await
     }
 
     pub fn preview_user_prompt_submit(

@@ -117,6 +117,7 @@ async fn submit_without_wait_with_turn_permissions(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -1663,6 +1664,7 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

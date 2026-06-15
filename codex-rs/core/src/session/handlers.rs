@@ -21,6 +21,8 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_protocol::AgentPath;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -38,6 +40,8 @@ use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SubAgentActivityEvent;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
@@ -45,10 +49,15 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::WarningEvent;
+use codex_protocol::protocol::WorkflowAgentControlAction;
+use codex_protocol::protocol::WorkflowProgressEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 
 use crate::context_manager::is_user_turn_boundary;
+use crate::hook_runtime::run_workflow_task_completed_hooks;
+use crate::tools::code_mode::WorkflowProgressUpdate;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::mcp::RequestId as ProtocolRequestId;
 use codex_rmcp_client::ElicitationAction;
@@ -65,6 +74,673 @@ pub async fn interrupt(sess: &Arc<Session>) {
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
     sess.close_unified_exec_processes().await;
+}
+
+async fn send_workflow_progress_update(
+    sess: &Arc<Session>,
+    turn_context: &crate::session::turn_context::TurnContext,
+    update: WorkflowProgressUpdate,
+) {
+    sess.send_event(
+        turn_context,
+        EventMsg::WorkflowProgress(WorkflowProgressEvent {
+            thread_id: sess.thread_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            run_id: update.run_id,
+            cell_id: update.cell_id,
+            event: update.event,
+            unix_ms: update.unix_ms,
+            session_id: update.session_id,
+            workflow_tool_call_id: update.workflow_tool_call_id,
+            cwd: update.cwd,
+            git_branch: update.git_branch,
+            workflow: update.workflow,
+            phase: update.phase,
+            agent: update.agent,
+            agent_id: update.agent_id,
+            child: update.child,
+            child_index: update.child_index,
+            child_run_id: update.child_run_id,
+            item_index: update.item_index,
+            stage_index: update.stage_index,
+            step_index: update.step_index,
+            error: update.error,
+            message: update.message,
+        }),
+    )
+    .await;
+}
+
+async fn send_workflow_control_error(sess: &Arc<Session>, sub_id: String, message: String) {
+    sess.send_event_raw(Event {
+        id: sub_id,
+        msg: EventMsg::Error(ErrorEvent {
+            message,
+            codex_error_info: Some(CodexErrorInfo::Other),
+        }),
+    })
+    .await;
+}
+
+async fn active_workflow_cell_state_or_error(
+    sess: &Arc<Session>,
+    turn_context: &crate::session::turn_context::TurnContext,
+    sub_id: String,
+    action: &str,
+    run_id: &str,
+    cell_id: &str,
+) -> Option<crate::tools::code_mode::WorkflowRunCellState> {
+    let matched_state =
+        crate::tools::code_mode::active_workflow_run_for_cell(turn_context, cell_id).await;
+    if matched_state.as_ref().map(|state| state.run_id.as_str()) == Some(run_id) {
+        return matched_state;
+    }
+
+    let detail = matched_state
+        .as_ref()
+        .map(|matched| {
+            format!(
+                "cell belongs to workflow run `{}` with status `{}`",
+                matched.run_id, matched.status
+            )
+        })
+        .unwrap_or_else(|| "no active workflow snapshot owns that cell".to_string());
+    send_workflow_control_error(
+        sess,
+        sub_id,
+        format!("Failed to {action} workflow run `{run_id}` cell `{cell_id}`: {detail}"),
+    )
+    .await;
+    None
+}
+
+async fn send_workflow_control_progress_event(
+    sess: &Arc<Session>,
+    turn_context: &crate::session::turn_context::TurnContext,
+    state: &crate::tools::code_mode::WorkflowRunCellState,
+    cell_id: &str,
+    event: &str,
+    message: Option<String>,
+) {
+    sess.send_event(
+        turn_context,
+        EventMsg::WorkflowProgress(WorkflowProgressEvent {
+            thread_id: sess.thread_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            run_id: state.run_id.clone(),
+            cell_id: cell_id.to_string(),
+            event: event.to_string(),
+            unix_ms: now_unix_timestamp_ms(),
+            session_id: state.session_id.clone(),
+            workflow_tool_call_id: state.workflow_tool_call_id.clone(),
+            cwd: state.cwd.clone(),
+            git_branch: state.git_branch.clone(),
+            workflow: None,
+            phase: None,
+            agent: None,
+            agent_id: None,
+            child: None,
+            child_index: None,
+            child_run_id: None,
+            item_index: None,
+            stage_index: None,
+            step_index: None,
+            error: None,
+            message,
+        }),
+    )
+    .await;
+}
+
+fn workflow_control_terminal_response(
+    response: &codex_code_mode::WaitToPendingOutcome,
+) -> Option<&codex_code_mode::RuntimeResponse> {
+    match response {
+        codex_code_mode::WaitToPendingOutcome::LiveCell(
+            codex_code_mode::ExecuteToPendingOutcome::Completed(response),
+        ) => Some(response),
+        _ => None,
+    }
+}
+
+fn workflow_control_progress_event_for_status(
+    active_event: &'static str,
+    status: &str,
+) -> Option<&'static str> {
+    match status {
+        "paused" => Some(active_event),
+        "completed" => Some("workflow_completed"),
+        "failed" => Some("workflow_failed"),
+        "terminated" => Some("workflow_terminated"),
+        _ => None,
+    }
+}
+
+async fn run_workflow_task_completed_hooks_for_update(
+    sess: &Arc<Session>,
+    turn_context: &Arc<crate::session::turn_context::TurnContext>,
+    update: &crate::tools::code_mode::WorkflowWaitUpdate,
+) {
+    if !update.completed_from_running() {
+        return;
+    }
+    let workflow_name = update.workflow.as_deref().unwrap_or(&update.run_id);
+    run_workflow_task_completed_hooks(
+        sess,
+        turn_context,
+        workflow_name,
+        &update.run_id,
+        Some(update.cell_id.as_str()),
+        update.status.as_str(),
+        None,
+    )
+    .await;
+}
+
+fn record_workflow_terminal_response(
+    sess: &Arc<Session>,
+    turn_context: &crate::session::turn_context::TurnContext,
+    runtime_response: &codex_code_mode::RuntimeResponse,
+) {
+    if matches!(
+        runtime_response,
+        codex_code_mode::RuntimeResponse::Yielded { .. }
+    ) {
+        return;
+    }
+    let runtime_cell_id = match runtime_response {
+        codex_code_mode::RuntimeResponse::Yielded { cell_id, .. }
+        | codex_code_mode::RuntimeResponse::Terminated { cell_id, .. }
+        | codex_code_mode::RuntimeResponse::Result { cell_id, .. } => cell_id,
+    };
+    sess.services
+        .rollout_thread_trace
+        .code_cell_trace_context(turn_context.sub_id.as_str(), runtime_cell_id.as_str())
+        .record_ended(runtime_response);
+    sess.services
+        .code_mode_service
+        .finish_cell_dispatch(runtime_cell_id);
+}
+
+pub async fn workflow_cancel(sess: &Arc<Session>, sub_id: String, run_id: String, cell_id: String) {
+    let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
+    let Some(state) = active_workflow_cell_state_or_error(
+        sess,
+        turn_context.as_ref(),
+        sub_id.clone(),
+        "cancel",
+        &run_id,
+        &cell_id,
+    )
+    .await
+    else {
+        return;
+    };
+
+    let response = match sess
+        .services
+        .code_mode_service
+        .terminate(codex_code_mode::CellId::new(cell_id.clone()))
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!(
+                        "Failed to cancel workflow run `{run_id}` cell `{cell_id}`: {err}"
+                    ),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            })
+            .await;
+            return;
+        }
+    };
+
+    let snapshot_update = crate::tools::code_mode::update_workflow_snapshot_for_wait(
+        turn_context.as_ref(),
+        &response,
+    )
+    .await;
+    if let Some(update) = snapshot_update.as_ref() {
+        run_workflow_task_completed_hooks_for_update(sess, &turn_context, update).await;
+    }
+    if let codex_code_mode::WaitOutcome::LiveCell(codex_code_mode::RuntimeResponse::Terminated {
+        cell_id,
+        ..
+    }) = &response
+        && snapshot_update
+            .as_ref()
+            .is_some_and(|update| update.run_id == run_id && update.status == "terminated")
+    {
+        send_workflow_control_progress_event(
+            sess,
+            turn_context.as_ref(),
+            &state,
+            cell_id.as_str(),
+            "workflow_cancelled",
+            None,
+        )
+        .await;
+    }
+    if let codex_code_mode::WaitOutcome::LiveCell(runtime_response) = &response {
+        record_workflow_terminal_response(sess, turn_context.as_ref(), runtime_response);
+    }
+}
+
+pub async fn workflow_pause(sess: &Arc<Session>, sub_id: String, run_id: String, cell_id: String) {
+    let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
+    let Some(state) = active_workflow_cell_state_or_error(
+        sess,
+        turn_context.as_ref(),
+        sub_id.clone(),
+        "pause",
+        &run_id,
+        &cell_id,
+    )
+    .await
+    else {
+        return;
+    };
+    if state.status != "running" {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!(
+                "Failed to pause workflow run `{run_id}` cell `{cell_id}`: workflow status is `{}`",
+                state.status
+            ),
+        )
+        .await;
+        return;
+    }
+
+    let response = match sess
+        .services
+        .code_mode_service
+        .pause_to_pending(codex_code_mode::CellId::new(cell_id.clone()))
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!("Failed to pause workflow run `{run_id}` cell `{cell_id}`: {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let snapshot_update = crate::tools::code_mode::update_workflow_snapshot_for_pause(
+        turn_context.as_ref(),
+        &response,
+    )
+    .await;
+    if let Some(update) = snapshot_update.as_ref() {
+        run_workflow_task_completed_hooks_for_update(sess, &turn_context, update).await;
+        if update.run_id == run_id
+            && let Some(event) =
+                workflow_control_progress_event_for_status("workflow_paused", &update.status)
+        {
+            send_workflow_control_progress_event(
+                sess,
+                turn_context.as_ref(),
+                &state,
+                &cell_id,
+                event,
+                None,
+            )
+            .await;
+        }
+    }
+    if let Some(runtime_response) = workflow_control_terminal_response(&response) {
+        record_workflow_terminal_response(sess, turn_context.as_ref(), runtime_response);
+    }
+}
+
+pub async fn workflow_continue(
+    sess: &Arc<Session>,
+    sub_id: String,
+    run_id: String,
+    cell_id: String,
+) {
+    let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
+    let Some(state) = active_workflow_cell_state_or_error(
+        sess,
+        turn_context.as_ref(),
+        sub_id.clone(),
+        "continue",
+        &run_id,
+        &cell_id,
+    )
+    .await
+    else {
+        return;
+    };
+    if state.status != "paused" {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!(
+                "Failed to continue workflow run `{run_id}` cell `{cell_id}`: workflow status is `{}`",
+                state.status
+            ),
+        )
+        .await;
+        return;
+    }
+
+    let response = match sess
+        .services
+        .code_mode_service
+        .wait_to_pending(codex_code_mode::WaitToPendingRequest {
+            cell_id: codex_code_mode::CellId::new(cell_id.clone()),
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!("Failed to continue workflow run `{run_id}` cell `{cell_id}`: {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let snapshot_update = crate::tools::code_mode::update_workflow_snapshot_for_pause(
+        turn_context.as_ref(),
+        &response,
+    )
+    .await;
+    if let Some(update) = snapshot_update.as_ref() {
+        run_workflow_task_completed_hooks_for_update(sess, &turn_context, update).await;
+        if update.run_id == run_id
+            && let Some(event) =
+                workflow_control_progress_event_for_status("workflow_continued", &update.status)
+        {
+            send_workflow_control_progress_event(
+                sess,
+                turn_context.as_ref(),
+                &state,
+                &cell_id,
+                event,
+                None,
+            )
+            .await;
+        }
+    }
+    if let Some(runtime_response) = workflow_control_terminal_response(&response) {
+        record_workflow_terminal_response(sess, turn_context.as_ref(), runtime_response);
+    }
+}
+
+pub async fn workflow_agent_interrupt(
+    sess: &Arc<Session>,
+    sub_id: String,
+    run_id: String,
+    agent_id: String,
+) {
+    workflow_agent_runtime_control(
+        sess,
+        sub_id,
+        run_id,
+        agent_id,
+        WorkflowAgentRuntimeControl::Interrupt,
+    )
+    .await;
+}
+
+pub async fn workflow_agent_control(
+    sess: &Arc<Session>,
+    sub_id: String,
+    run_id: String,
+    agent_id: String,
+    action: WorkflowAgentControlAction,
+) {
+    workflow_agent_runtime_control(
+        sess,
+        sub_id,
+        run_id,
+        agent_id,
+        WorkflowAgentRuntimeControl::Action(action),
+    )
+    .await;
+}
+
+#[derive(Clone, Copy)]
+enum WorkflowAgentRuntimeControl {
+    Interrupt,
+    Action(WorkflowAgentControlAction),
+}
+
+impl WorkflowAgentRuntimeControl {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::Action(WorkflowAgentControlAction::Skip) => "skip",
+            Self::Action(WorkflowAgentControlAction::Retry) => "retry",
+        }
+    }
+
+    fn event(self) -> &'static str {
+        match self {
+            Self::Interrupt => "agent_interrupted",
+            Self::Action(WorkflowAgentControlAction::Skip) => "agent_skip_requested",
+            Self::Action(WorkflowAgentControlAction::Retry) => "agent_retry_requested",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt requested",
+            Self::Action(WorkflowAgentControlAction::Skip) => "skip requested",
+            Self::Action(WorkflowAgentControlAction::Retry) => "retry requested",
+        }
+    }
+}
+
+async fn workflow_agent_runtime_control(
+    sess: &Arc<Session>,
+    sub_id: String,
+    run_id: String,
+    agent_id: String,
+    control: WorkflowAgentRuntimeControl,
+) {
+    let run_id = run_id.trim().to_string();
+    let agent_id = agent_id.trim().to_string();
+    let verb = control.verb();
+    let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
+    let Some(target) = crate::tools::code_mode::running_workflow_agent_for_run(
+        turn_context.as_ref(),
+        run_id.as_str(),
+        agent_id.as_str(),
+    )
+    .await
+    else {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!(
+                "Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: no running workflow snapshot owns that agent"
+            ),
+        )
+        .await;
+        return;
+    };
+    if target.status == "detached" && matches!(control, WorkflowAgentRuntimeControl::Action(_)) {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!(
+                "Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: detached workflow agents only support interrupt; skip/retry require a waited agent"
+            ),
+        )
+        .await;
+        return;
+    }
+
+    let agent_path = match AgentPath::try_from(agent_id.as_str()) {
+        Ok(path) if !path.is_root() => path,
+        Ok(_) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: root is not a spawned agent"),
+            )
+            .await;
+            return;
+        }
+        Err(err) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!(
+                    "Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: invalid agent path: {err}"
+                ),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let agent_thread_id = match sess
+        .services
+        .agent_control
+        .resolve_agent_reference(
+            sess.thread_id,
+            &turn_context.session_source,
+            agent_id.as_str(),
+        )
+        .await
+    {
+        Ok(agent_thread_id) => agent_thread_id,
+        Err(err) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+    if agent_thread_id == sess.thread_id {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: an agent cannot interrupt itself"),
+        )
+        .await;
+        return;
+    }
+    let receiver_agent = match sess
+        .services
+        .agent_control
+        .ensure_agent_known(agent_thread_id)
+    {
+        Ok(receiver_agent) => receiver_agent,
+        Err(err) => {
+            send_workflow_control_error(
+                sess,
+                sub_id,
+                format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+    if receiver_agent
+        .agent_path
+        .as_ref()
+        .is_some_and(AgentPath::is_root)
+    {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: root is not a spawned agent"),
+        )
+        .await;
+        return;
+    }
+    let receiver_agent_path = receiver_agent
+        .agent_path
+        .clone()
+        .unwrap_or(agent_path.clone());
+    if receiver_agent_path != agent_path {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!(
+                "Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: live agent path is `{}`",
+                receiver_agent_path.as_str()
+            ),
+        )
+        .await;
+        return;
+    }
+
+    if matches!(control, WorkflowAgentRuntimeControl::Action(_))
+        && let Some(update) = crate::tools::code_mode::record_workflow_agent_control_event(
+            turn_context.as_ref(),
+            &target,
+            control.event(),
+            Some(control.message()),
+        )
+        .await
+    {
+        send_workflow_progress_update(sess, turn_context.as_ref(), update).await;
+    }
+
+    let result = match sess
+        .services
+        .agent_control
+        .interrupt_agent(agent_thread_id)
+        .await
+    {
+        Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => Ok(()),
+        Err(err) => Err(err),
+    };
+    if let Err(err) = result {
+        send_workflow_control_error(
+            sess,
+            sub_id,
+            format!("Failed to {verb} workflow run `{run_id}` agent `{agent_id}`: {err}"),
+        )
+        .await;
+        return;
+    }
+
+    sess.send_event(
+        turn_context.as_ref(),
+        SubAgentActivityEvent {
+            event_id: sub_id,
+            occurred_at_ms: now_unix_timestamp_ms(),
+            agent_thread_id,
+            agent_path,
+            kind: SubAgentActivityKind::Interrupted,
+        }
+        .into(),
+    )
+    .await;
+
+    if matches!(control, WorkflowAgentRuntimeControl::Interrupt)
+        && let Some(update) = crate::tools::code_mode::record_workflow_agent_control_event(
+            turn_context.as_ref(),
+            &target,
+            control.event(),
+            Some(control.message()),
+        )
+        .await
+    {
+        send_workflow_progress_update(sess, turn_context.as_ref(), update).await;
+    }
 }
 
 pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
@@ -203,7 +879,8 @@ pub(super) async fn user_input_or_turn_inner(
     };
     updates.final_output_json_schema = Some(final_output_json_schema);
 
-    let Ok(current_context) = sess.new_turn_with_sub_id(sub_id.clone(), updates).await else {
+    let Ok(current_context) = Box::pin(sess.new_turn_with_sub_id(sub_id.clone(), updates)).await
+    else {
         // new_turn_with_sub_id already emits the error event.
         return;
     };
@@ -712,6 +1389,30 @@ pub(super) async fn submission_loop(
                 }
                 Op::CleanBackgroundTerminals => {
                     clean_background_terminals(&sess).await;
+                    false
+                }
+                Op::WorkflowCancel { run_id, cell_id } => {
+                    workflow_cancel(&sess, sub.id.clone(), run_id, cell_id).await;
+                    false
+                }
+                Op::WorkflowPause { run_id, cell_id } => {
+                    workflow_pause(&sess, sub.id.clone(), run_id, cell_id).await;
+                    false
+                }
+                Op::WorkflowContinue { run_id, cell_id } => {
+                    workflow_continue(&sess, sub.id.clone(), run_id, cell_id).await;
+                    false
+                }
+                Op::WorkflowAgentInterrupt { run_id, agent_id } => {
+                    workflow_agent_interrupt(&sess, sub.id.clone(), run_id, agent_id).await;
+                    false
+                }
+                Op::WorkflowAgentControl {
+                    run_id,
+                    agent_id,
+                    action,
+                } => {
+                    workflow_agent_control(&sess, sub.id.clone(), run_id, agent_id, action).await;
                     false
                 }
                 Op::RealtimeConversationStart(params) => {

@@ -194,6 +194,7 @@ use super::skill_popup::SkillPopup;
 use super::slash_commands::BuiltinCommandFlags;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
+use super::slash_commands::WorkflowSlashCommand;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::EditorKeymap;
@@ -370,6 +371,7 @@ pub(crate) struct ChatComposer {
     plugins_command_enabled: bool,
     service_tier_commands_enabled: bool,
     service_tier_commands: Vec<ServiceTierCommand>,
+    workflow_slash_commands: Vec<WorkflowSlashCommand>,
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     personality_command_enabled: bool,
@@ -423,6 +425,18 @@ fn plan_mode_nudge_line() -> Line<'static> {
     ])
 }
 
+fn workflow_keyword_nudge_line() -> Line<'static> {
+    Line::from(vec![
+        "Ultracode keyword detected.".cyan(),
+        " This turn will use xhigh + workflows. ".into(),
+        key_hint::alt(KeyCode::Char('w')).into(),
+        " ignore".into(),
+        "   ".into(),
+        key_hint::plain(KeyCode::Esc).into(),
+        " dismiss".into(),
+    ])
+}
+
 impl ChatComposer {
     fn slash_input(&self) -> SlashInput<'_> {
         SlashInput::new(
@@ -430,6 +444,7 @@ impl ChatComposer {
             self.draft.is_bash_mode,
             self.builtin_command_flags(),
             &self.service_tier_commands,
+            &self.workflow_slash_commands,
         )
     }
 
@@ -495,6 +510,7 @@ impl ChatComposer {
                 mode: FooterMode::ComposerEmpty,
                 hint_override: None,
                 plan_mode_nudge_visible: false,
+                workflow_keyword_nudge_visible: false,
                 flash: None,
                 context_window_percent: None,
                 context_window_used_tokens: None,
@@ -538,6 +554,7 @@ impl ChatComposer {
             plugins_command_enabled: false,
             service_tier_commands_enabled: false,
             service_tier_commands: Vec::new(),
+            workflow_slash_commands: Vec::new(),
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             personality_command_enabled: false,
@@ -639,6 +656,11 @@ impl ChatComposer {
 
     pub fn set_service_tier_commands(&mut self, commands: Vec<ServiceTierCommand>) {
         self.service_tier_commands = commands;
+        self.sync_popups();
+    }
+
+    pub fn set_workflow_slash_commands(&mut self, commands: Vec<WorkflowSlashCommand>) {
+        self.workflow_slash_commands = commands;
         self.sync_popups();
     }
 
@@ -1169,9 +1191,22 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_workflow_keyword_nudge_visible(&mut self, visible: bool) -> bool {
+        if self.footer.workflow_keyword_nudge_visible == visible {
+            return false;
+        }
+        self.footer.workflow_keyword_nudge_visible = visible;
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn plan_mode_nudge_visible(&self) -> bool {
         self.footer.plan_mode_nudge_visible
+    }
+
+    #[cfg(test)]
+    pub(crate) fn workflow_keyword_nudge_visible(&self) -> bool {
+        self.footer.workflow_keyword_nudge_visible
     }
 
     pub(crate) fn set_remote_image_urls(&mut self, urls: Vec<String>) {
@@ -2894,6 +2929,10 @@ impl ChatComposer {
         Some(match command {
             SlashCommandItem::Builtin(cmd) => InputResult::Command(cmd),
             SlashCommandItem::ServiceTier(command) => InputResult::ServiceTierCommand(command),
+            SlashCommandItem::Workflow(command) => InputResult::Submitted {
+                text: command.invocation_prompt(""),
+                text_elements: Vec::new(),
+            },
         })
     }
 
@@ -2918,14 +2957,18 @@ impl ChatComposer {
         );
         let trimmed_rest = inline_command.rest.trim();
         args_elements = Self::trim_text_elements(inline_command.rest, trimmed_rest, args_elements);
-        let SlashCommandItem::Builtin(cmd) = command else {
-            return None;
-        };
-        Some(InputResult::CommandWithArgs(
-            cmd,
-            trimmed_rest.to_string(),
-            args_elements,
-        ))
+        match command {
+            SlashCommandItem::Builtin(cmd) => Some(InputResult::CommandWithArgs(
+                cmd,
+                trimmed_rest.to_string(),
+                args_elements,
+            )),
+            SlashCommandItem::Workflow(command) => Some(InputResult::Submitted {
+                text: command.invocation_prompt(trimmed_rest),
+                text_elements: Vec::new(),
+            }),
+            SlashCommandItem::ServiceTier(_) => None,
+        }
     }
 
     /// Expand pending placeholders and extract normalized inline-command args.
@@ -3864,6 +3907,7 @@ impl ChatComposer {
         self.footer.mode = FooterMode::ComposerEmpty;
         self.footer.hint_override = Some(Vec::new());
         self.footer.plan_mode_nudge_visible = false;
+        self.footer.workflow_keyword_nudge_visible = false;
         self.footer.flash = None;
     }
 
@@ -4200,6 +4244,17 @@ impl ChatComposer {
                         buf,
                         truncate_line_with_ellipsis_if_overflow(
                             plan_mode_nudge_line(),
+                            available_width,
+                        ),
+                    );
+                } else if self.footer.workflow_keyword_nudge_visible {
+                    let available_width =
+                        hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+                    render_footer_line(
+                        hint_rect,
+                        buf,
+                        truncate_line_with_ellipsis_if_overflow(
+                            workflow_keyword_nudge_line(),
                             available_width,
                         ),
                     );
@@ -7867,6 +7922,9 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected model command, got service tier {command:?}")
                 }
+                Some(CommandItem::Workflow(command)) => {
+                    panic!("expected model command, got workflow {command:?}")
+                }
                 None => panic!("no selected command for '/mo'"),
             },
             _ => panic!("slash popup not active after typing '/mo'"),
@@ -7949,6 +8007,9 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected resume command, got service tier {command:?}")
                 }
+                Some(CommandItem::Workflow(command)) => {
+                    panic!("expected resume command, got workflow {command:?}")
+                }
                 None => panic!("no selected command for '/res'"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
@@ -8002,6 +8063,9 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected pets command, got service tier {command:?}")
+                }
+                Some(CommandItem::Workflow(command)) => {
+                    panic!("expected pets command, got workflow {command:?}")
                 }
                 None => panic!("no selected command for '/pet'"),
             },
@@ -8057,6 +8121,9 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected btw command, got service tier {command:?}")
                 }
+                Some(CommandItem::Workflow(command)) => {
+                    panic!("expected btw command, got workflow {command:?}")
+                }
                 None => panic!("no selected command for '/bt'"),
             },
             _ => panic!("slash popup not active after typing '/bt'"),
@@ -8110,6 +8177,9 @@ mod tests {
                 }
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected side command, got service tier {command:?}")
+                }
+                Some(CommandItem::Workflow(command)) => {
+                    panic!("expected side command, got workflow {command:?}")
                 }
                 None => panic!("no selected command for '/si'"),
             },

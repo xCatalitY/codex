@@ -638,6 +638,10 @@ impl CollaborationMode {
         self.settings_ref().reasoning_effort.clone()
     }
 
+    pub fn workflow_mode(&self) -> WorkflowMode {
+        self.settings_ref().workflow_mode.unwrap_or_default()
+    }
+
     /// Updates the collaboration mode with new model and/or effort values.
     ///
     /// - `model`: `Some(s)` to update the model, `None` to keep the current model
@@ -657,11 +661,25 @@ impl CollaborationMode {
             reasoning_effort: effort.unwrap_or_else(|| settings.reasoning_effort.clone()),
             developer_instructions: developer_instructions
                 .unwrap_or_else(|| settings.developer_instructions.clone()),
+            workflow_mode: settings.workflow_mode,
         };
 
         CollaborationMode {
             mode: self.mode,
             settings: updated_settings,
+        }
+    }
+
+    pub fn with_workflow_mode(&self, workflow_mode: WorkflowMode) -> Self {
+        let settings = self.settings_ref();
+        CollaborationMode {
+            mode: self.mode,
+            settings: Settings {
+                model: settings.model.clone(),
+                reasoning_effort: settings.reasoning_effort.clone(),
+                developer_instructions: settings.developer_instructions.clone(),
+                workflow_mode: Some(workflow_mode),
+            },
         }
     }
 
@@ -684,9 +702,22 @@ impl CollaborationMode {
                     .developer_instructions
                     .clone()
                     .unwrap_or_else(|| settings.developer_instructions.clone()),
+                workflow_mode: mask.workflow_mode.unwrap_or(settings.workflow_mode),
             },
         }
     }
+}
+
+/// Workflow overlay for a collaboration mode.
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowMode {
+    #[default]
+    Disabled,
+    Dynamic,
+    Ultracode,
 }
 
 /// Settings for a collaboration mode.
@@ -695,6 +726,8 @@ pub struct Settings {
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub developer_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_mode: Option<WorkflowMode>,
 }
 
 /// A mask for collaboration mode settings, allowing partial updates.
@@ -706,6 +739,8 @@ pub struct CollaborationModeMask {
     pub model: Option<String>,
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
     pub developer_instructions: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_mode: Option<Option<WorkflowMode>>,
 }
 
 #[cfg(test)]
@@ -721,6 +756,7 @@ mod tests {
                 model: "gpt-5.2-codex".to_string(),
                 reasoning_effort: Some(ReasoningEffort::High),
                 developer_instructions: Some("stay focused".to_string()),
+                workflow_mode: None,
             },
         };
         let mask = CollaborationModeMask {
@@ -729,6 +765,7 @@ mod tests {
             model: None,
             reasoning_effort: Some(None),
             developer_instructions: Some(None),
+            workflow_mode: None,
         };
 
         let expected = CollaborationMode {
@@ -737,9 +774,43 @@ mod tests {
                 model: "gpt-5.2-codex".to_string(),
                 reasoning_effort: None,
                 developer_instructions: None,
+                workflow_mode: None,
             },
         };
         assert_eq!(expected, mode.apply_mask(&mask));
+    }
+
+    #[test]
+    fn apply_mask_can_set_and_clear_workflow_mode() {
+        let mode = CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "gpt-5.2-codex".to_string(),
+                reasoning_effort: Some(ReasoningEffort::High),
+                developer_instructions: None,
+                workflow_mode: None,
+            },
+        };
+        let enabled = mode.apply_mask(&CollaborationModeMask {
+            name: "Workflow".to_string(),
+            mode: None,
+            model: None,
+            reasoning_effort: None,
+            developer_instructions: None,
+            workflow_mode: Some(Some(WorkflowMode::Ultracode)),
+        });
+        assert_eq!(WorkflowMode::Ultracode, enabled.workflow_mode());
+
+        let cleared = enabled.apply_mask(&CollaborationModeMask {
+            name: "Workflow".to_string(),
+            mode: None,
+            model: None,
+            reasoning_effort: None,
+            developer_instructions: None,
+            workflow_mode: Some(None),
+        });
+        assert_eq!(WorkflowMode::Disabled, cleared.workflow_mode());
+        assert_eq!(None, cleared.settings.workflow_mode);
     }
 
     #[test]

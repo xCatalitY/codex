@@ -1189,6 +1189,2456 @@ async fn no_op_stub_slash_command_is_available_from_local_recall() {
     assert_eq!(recall_latest_after_clearing(&mut chat), "/debug-m-drop");
 }
 
+fn write_workflow_run_snapshot(chat: &ChatWidget, file_name: &str, value: serde_json::Value) {
+    let runs_dir = chat.config.codex_home.join("workflow-runs").to_path_buf();
+    std::fs::create_dir_all(&runs_dir).expect("create workflow runs dir");
+    std::fs::write(runs_dir.join(file_name), value.to_string()).expect("write workflow snapshot");
+}
+
+fn write_workflow_transcript_snapshot(chat: &ChatWidget, run_id: &str, value: serde_json::Value) {
+    let transcript_dir = chat
+        .config
+        .codex_home
+        .join("workflow-runs")
+        .join(run_id)
+        .join("transcripts");
+    std::fs::create_dir_all(&transcript_dir).expect("create workflow transcript dir");
+    std::fs::write(transcript_dir.join("run.json"), value.to_string())
+        .expect("write workflow transcript snapshot");
+}
+
+fn write_active_workflow_run_marker(chat: &ChatWidget, file_name: &str, value: serde_json::Value) {
+    let active_dir = chat.config.codex_home.join("workflow-runs").join("active");
+    std::fs::create_dir_all(&active_dir).expect("create active workflow runs dir");
+    std::fs::write(active_dir.join(file_name), value.to_string())
+        .expect("write active workflow marker");
+}
+
+fn write_workflow_definition(path: &std::path::Path, metadata_name: &str, description: &str) {
+    let parent = path.parent().expect("workflow file parent");
+    std::fs::create_dir_all(parent).expect("create workflow definition dir");
+    std::fs::write(
+        path,
+        format!(
+            "export const meta = {{ name: '{metadata_name}', description: '{description}' }};\nphase('test');\n"
+        ),
+    )
+    .expect("write workflow definition");
+}
+
+fn write_rich_workflow_definition(path: &std::path::Path) {
+    let parent = path.parent().expect("workflow file parent");
+    std::fs::create_dir_all(parent).expect("create workflow definition dir");
+    std::fs::write(
+        path,
+        "export const meta = {
+  name: 'release',
+  description: 'Project release',
+  whenToUse: 'Use when publishing a release channel',
+  inputSchema: { type: 'object', properties: { channel: { type: 'string' } } },
+  phases: [{ title: 'Build' }, { title: 'Publish', model: 'xhigh' }],
+};
+phase('test');
+",
+    )
+    .expect("write workflow definition");
+}
+
+#[tokio::test]
+async fn slash_config_opens_workflow_settings_view() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Config);
+
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("workflow-settings"));
+}
+
+#[tokio::test]
+async fn workflow_settings_policy_items_include_discovered_and_configured_names() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let project_dir = chat.config.codex_home.join("project-workflows");
+    let plugin_dir = chat.config.codex_home.join("plugin-workflows");
+    chat.config.workflows.workflow_dirs = vec![project_dir.clone()];
+    chat.config.workflows.plugin_workflow_dirs =
+        vec![crate::legacy_core::config::WorkflowPluginDirectory {
+            namespace: "sample".to_string(),
+            plugin_id: "sample@test".to_string(),
+            dir: plugin_dir.clone(),
+        }];
+    chat.config.workflows.named.insert(
+        "release".to_string(),
+        codex_config::types::WorkflowDefinitionConfig {
+            enabled: Some(false),
+            approval: Some(codex_config::types::WorkflowApproval::Ask),
+        },
+    );
+    chat.config.workflows.named.insert(
+        "manual-only".to_string(),
+        codex_config::types::WorkflowDefinitionConfig {
+            enabled: Some(true),
+            approval: Some(codex_config::types::WorkflowApproval::Deny),
+        },
+    );
+    write_workflow_definition(
+        project_dir.join("release.js").as_path(),
+        "release",
+        "Project release",
+    );
+    write_workflow_definition(
+        project_dir.join("docs").join("workflow.js").as_path(),
+        "docs",
+        "Docs workflow",
+    );
+    write_workflow_definition(
+        plugin_dir.join("release.js").as_path(),
+        "release",
+        "Plugin release",
+    );
+
+    let items = chat.workflow_policy_items_for_settings();
+    let summary = items
+        .into_iter()
+        .map(|item| (item.name, item.enabled, item.approval))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        summary,
+        vec![
+            ("docs".to_string(), None, None),
+            (
+                "manual-only".to_string(),
+                Some(true),
+                Some(codex_config::types::WorkflowApproval::Deny)
+            ),
+            (
+                "release".to_string(),
+                Some(false),
+                Some(codex_config::types::WorkflowApproval::Ask)
+            ),
+            ("sample:release".to_string(), None, None),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_lists_available_definitions_and_shadowing() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let project_dir = chat.config.codex_home.join("project-workflows");
+    let global_dir = chat.config.codex_home.join("global-workflows");
+    let system_dir = chat.config.codex_home.join("workflows/.system");
+    let plugin_dir = chat.config.codex_home.join("plugin-workflows");
+    chat.config.workflows.workflow_dirs =
+        vec![project_dir.clone(), global_dir.clone(), system_dir.clone()];
+    chat.config.workflows.plugin_workflow_dirs =
+        vec![crate::legacy_core::config::WorkflowPluginDirectory {
+            namespace: "sample".to_string(),
+            plugin_id: "sample@test".to_string(),
+            dir: plugin_dir.clone(),
+        }];
+    chat.config.workflows.named.insert(
+        "release".to_string(),
+        codex_config::types::WorkflowDefinitionConfig {
+            enabled: Some(false),
+            approval: Some(codex_config::types::WorkflowApproval::Ask),
+        },
+    );
+    chat.config.workflows.named.insert(
+        "sample:release".to_string(),
+        codex_config::types::WorkflowDefinitionConfig {
+            enabled: Some(true),
+            approval: Some(codex_config::types::WorkflowApproval::Allow),
+        },
+    );
+
+    write_rich_workflow_definition(project_dir.join("release.js").as_path());
+    write_workflow_definition(
+        global_dir.join("release.js").as_path(),
+        "release",
+        "Global release",
+    );
+    write_workflow_definition(
+        global_dir.join("docs").join("workflow.js").as_path(),
+        "docs-meta",
+        "Docs workflow",
+    );
+    write_workflow_definition(
+        system_dir.join("builtin.js").as_path(),
+        "builtin",
+        "Builtin workflow",
+    );
+    write_workflow_definition(
+        plugin_dir.join("release.js").as_path(),
+        "release",
+        "Plugin release",
+    );
+    std::fs::write(project_dir.join("broken.js"), "phase('missing meta');")
+        .expect("write invalid workflow definition");
+    std::fs::write(
+        project_dir.join("bad-schema.js"),
+        "export const meta = { name: 'bad-schema', description: 'Bad schema', inputSchema: makeSchema() };\nphase('test');\n",
+    )
+    .expect("write invalid workflow schema definition");
+
+    chat.dispatch_command(SlashCommand::Workflows);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Available workflows:"), "{rendered}");
+    assert!(
+        rendered.contains("- `release` - Project release"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("source: [Workflow]"), "{rendered}");
+    assert!(
+        rendered.contains("when: Use when publishing a release channel"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("input: { type: 'object', properties: { channel: { type: 'string' } } }"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("phases: Build, Publish [xhigh]"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("policy: disabled; approval: ask"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("- `release` - Global release"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- `docs` (meta `docs-meta`) - Docs workflow"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- `builtin` - Builtin workflow"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("source: [System Workflow]"), "{rendered}");
+    assert!(
+        rendered.contains("- `sample:release` (meta `release`) - Plugin release"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("source: [Plugin Workflow]"), "{rendered}");
+    assert!(
+        rendered.contains("policy: enabled; approval: allow"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Shadowed workflow definitions: 1"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Skipped invalid workflow definitions: 2"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn saved_workflow_slash_command_submits_invocation_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let workflow_dir = chat.config.codex_home.join("workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    write_rich_workflow_definition(workflow_dir.join("release.js").as_path());
+    chat.sync_workflow_slash_commands();
+
+    submit_composer_text(&mut chat, "/release ship alpha");
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered_history.contains("Unrecognized command"),
+        "{rendered_history}"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(text.contains("Run the saved workflow `release`"), "{text}");
+            assert!(text.contains("workflow tool with name `release`"), "{text}");
+            assert!(text.contains("ship alpha"), "{text}");
+            assert!(
+                text.contains(
+                    "Interpret these user arguments according to the workflow input schema below"
+                ),
+                "{text}"
+            );
+            assert!(
+                text.contains("set `args` to the resulting JSON value"),
+                "{text}"
+            );
+            assert!(!text.contains("pass these user arguments"), "{text}");
+            assert!(text.contains("Workflow input schema:"), "{text}");
+            assert!(
+                text.contains("{ type: 'object', properties: { channel: { type: 'string' } } }"),
+                "{text}"
+            );
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected workflow slash command to submit user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_run_submits_named_workflow_invocation_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let workflow_dir = chat.config.codex_home.join("workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    write_rich_workflow_definition(workflow_dir.join("release.js").as_path());
+
+    submit_composer_text(&mut chat, r#"/workflows run release {"channel":"alpha"}"#);
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered_history.contains("Unrecognized command"),
+        "{rendered_history}"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(text.contains("Run the saved workflow `release`"), "{text}");
+            assert!(text.contains("workflow tool with name `release`"), "{text}");
+            assert!(
+                text.contains("set `args` to this exact JSON value"),
+                "{text}"
+            );
+            assert!(text.contains(r#""channel": "alpha""#), "{text}");
+            assert!(!text.contains("pass these user arguments"), "{text}");
+            assert!(text.contains("Workflow input schema:"), "{text}");
+            assert!(
+                text.contains("{ type: 'object', properties: { channel: { type: 'string' } } }"),
+                "{text}"
+            );
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected /workflows run to submit user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_run_unwraps_shell_quoted_json_args() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let workflow_dir = chat.config.codex_home.join("workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    write_rich_workflow_definition(workflow_dir.join("release.js").as_path());
+
+    submit_composer_text(&mut chat, r#"/workflows run release '{"channel":"alpha"}'"#);
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered_history.contains("Unrecognized command"),
+        "{rendered_history}"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(
+                text.contains("set `args` to this exact JSON value"),
+                "{text}"
+            );
+            assert!(text.contains(r#""channel": "alpha""#), "{text}");
+            assert!(!text.contains("Interpret these user arguments"), "{text}");
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected /workflows run to submit user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_run_submits_plugin_workflow_invocation_prompt() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let plugin_dir = chat.config.codex_home.join("plugin-workflows");
+    write_rich_workflow_definition(plugin_dir.join("release.js").as_path());
+    chat.on_plugin_mentions_loaded(
+        None,
+        vec![crate::legacy_core::config::WorkflowPluginDirectory {
+            namespace: "sample".to_string(),
+            plugin_id: "sample@test".to_string(),
+            dir: plugin_dir,
+        }],
+    );
+
+    submit_composer_text(
+        &mut chat,
+        r#"/workflows run sample:release {"channel":"alpha"}"#,
+    );
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered_history.contains("Unrecognized command"),
+        "{rendered_history}"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(
+                text.contains("Run the saved workflow `sample:release`"),
+                "{text}"
+            );
+            assert!(
+                text.contains("workflow tool with name `sample:release`"),
+                "{text}"
+            );
+            assert!(
+                text.contains("set `args` to this exact JSON value"),
+                "{text}"
+            );
+            assert!(text.contains(r#""channel": "alpha""#), "{text}");
+            assert!(text.contains("Workflow input schema:"), "{text}");
+            assert!(
+                text.contains("{ type: 'object', properties: { channel: { type: 'string' } } }"),
+                "{text}"
+            );
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected /workflows run to submit plugin workflow turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_run_rejects_disabled_named_workflow() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let workflow_dir = chat.config.codex_home.join("workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    write_rich_workflow_definition(workflow_dir.join("release.js").as_path());
+    chat.config.workflows.named.insert(
+        "release".to_string(),
+        codex_config::types::WorkflowDefinitionConfig {
+            enabled: Some(false),
+            approval: None,
+        },
+    );
+
+    submit_composer_text(&mut chat, "/workflows run release");
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered_history.contains("Workflow `release` is disabled by workflow config."),
+        "{rendered_history}"
+    );
+}
+
+#[tokio::test]
+async fn plugin_mentions_refresh_updates_workflow_slash_commands() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let plugin_dir = chat.config.codex_home.join("plugin-workflows");
+    write_workflow_definition(
+        plugin_dir.join("release.js").as_path(),
+        "release",
+        "Plugin release",
+    );
+
+    chat.on_plugin_mentions_loaded(
+        None,
+        vec![crate::legacy_core::config::WorkflowPluginDirectory {
+            namespace: "sample".to_string(),
+            plugin_id: "sample@test".to_string(),
+            dir: plugin_dir,
+        }],
+    );
+
+    submit_composer_text(&mut chat, "/sample:release ship alpha");
+
+    let rendered_history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered_history.contains("Unrecognized command"),
+        "{rendered_history}"
+    );
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text { text, .. } = &items[0] else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(
+                text.contains("Run the saved workflow `sample:release`"),
+                "{text}"
+            );
+            assert!(
+                text.contains("workflow tool with name `sample:release`"),
+                "{text}"
+            );
+            assert!(text.contains("ship alpha"), "{text}");
+        }
+        other => {
+            panic!("expected plugin workflow slash command to submit user turn, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_lists_recent_run_snapshots() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_old.json",
+        serde_json::json!({
+            "run_id": "wf_old",
+            "workflow_name": "docs",
+            "description": "Update docs",
+            "status": "completed",
+            "ended_unix_ms": 10_u64,
+            "output_preview": "Script completed\nok"
+        }),
+    );
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_new.json",
+        serde_json::json!({
+            "run_id": "wf_new",
+            "workflow_name": "release",
+            "description": "Release workflow",
+            "status": "failed",
+            "cell_id": "cell-7",
+            "source": { "kind": "named", "name": "release", "path": "/tmp/release/source.js" },
+            "script_path": "/tmp/release/workflow.js",
+            "transcript_dir": "/tmp/release/transcripts",
+            "resume_from_run_id": "wf_previous",
+            "ended_unix_ms": 20_u64,
+            "progress": [
+                {
+                    "event": "parallel_failed",
+                    "unix_ms": 22_u64,
+                    "workflow": "release",
+                    "message": "item 2: bad branch",
+                    "data": {
+                        "itemIndex": 2_u64,
+                        "error": "bad branch"
+                    }
+                }
+            ],
+            "error": "Script failed\nboom"
+        }),
+    );
+    let runs_dir = chat.config.codex_home.join("workflow-runs").to_path_buf();
+    std::fs::write(runs_dir.join("broken.json"), "{").expect("write invalid snapshot");
+
+    chat.dispatch_command(SlashCommand::Workflows);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Approval: auto"), "{rendered}");
+    assert!(rendered.contains("Recent runs:"), "{rendered}");
+    assert!(
+        rendered.contains("- failed release `wf_new` (cell `cell-7`)"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("source: named `release`"), "{rendered}");
+    assert!(
+        rendered.contains("script: `/tmp/release/workflow.js`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("transcripts: `/tmp/release/transcripts`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("resumed from: `wf_previous`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("progress: parallel_failed workflow `release` item 2 - item 2: bad branch"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Script failed / boom"), "{rendered}");
+    assert!(rendered.contains("- completed docs `wf_old`"), "{rendered}");
+    assert!(
+        rendered.contains("Skipped invalid run snapshots: 1"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_sorts_runs_by_updated_progress_ended_and_started_times() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_started.json",
+        serde_json::json!({
+            "run_id": "wf_started",
+            "workflow_name": "started",
+            "status": "running",
+            "startedUnixMs": 70_u64
+        }),
+    );
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_ended.json",
+        serde_json::json!({
+            "run_id": "wf_ended",
+            "workflow_name": "ended",
+            "status": "completed",
+            "ended_unix_ms": 80_u64
+        }),
+    );
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_progress.json",
+        serde_json::json!({
+            "run_id": "wf_progress",
+            "workflow_name": "progress",
+            "status": "running",
+            "ended_unix_ms": 10_u64,
+            "progress": [
+                { "event": "phase", "unix_ms": 90_u64, "phase": "scan" }
+            ]
+        }),
+    );
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_updated.json",
+        serde_json::json!({
+            "run_id": "wf_updated",
+            "workflow_name": "updated",
+            "status": "running",
+            "updatedUnixMs": 100_u64,
+            "ended_unix_ms": 10_u64
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    let updated = rendered.find("`wf_updated`").expect(&rendered);
+    let progress = rendered.find("`wf_progress`").expect(&rendered);
+    let ended = rendered.find("`wf_ended`").expect(&rendered);
+    let started = rendered.find("`wf_started`").expect(&rendered);
+    assert!(updated < progress, "{rendered}");
+    assert!(progress < ended, "{rendered}");
+    assert!(ended < started, "{rendered}");
+}
+
+#[tokio::test]
+async fn slash_workflows_loads_transcript_run_json_when_index_missing() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let runs_dir = chat.config.codex_home.join("workflow-runs");
+    let imported_run_dir = runs_dir.join("wf_transcript_only");
+    let imported_transcript_dir = imported_run_dir.join("transcripts");
+    let imported_script_path = imported_run_dir.join("script.js");
+    write_workflow_transcript_snapshot(
+        &chat,
+        "wf_transcript_only",
+        serde_json::json!({
+            "run_id": "wf_transcript_only",
+            "workflow_name": "imported",
+            "description": "Recovered from transcript metadata",
+            "status": "completed",
+            "script_path": imported_script_path.display().to_string(),
+            "ended_unix_ms": 30_u64,
+            "output_preview": "Script completed\nimport-ok",
+            "workflowProgress": [
+                {
+                    "type": "workflow_agent",
+                    "index": 1_u64,
+                    "label": "Import review",
+                    "agentId": "/root/workflow_import_1",
+                    "state": "done",
+                    "lastProgressAt": 25_u64,
+                    "resultPreview": "import reviewed"
+                }
+            ]
+        }),
+    );
+    std::fs::write(
+        imported_transcript_dir.join("agent-root_workflow_import_1.jsonl"),
+        concat!(
+            r#"{"type":"user","uuid":"u1","isSidechain":true,"message":{"content":[{"type":"text","text":"inspect imported transcript"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":true,"message":{"content":[{"type":"text","text":"import transcript final"}]}}"#,
+            "\n"
+        ),
+    )
+    .expect("write imported agent transcript");
+    std::fs::write(
+        imported_transcript_dir.join("agent-root_workflow_import_1.meta.json"),
+        serde_json::json!({
+            "version": "codex-workflow-agent-meta-v1",
+            "agentId": "/root/workflow_import_1",
+            "taskName": "/root/workflow_import_1",
+            "agentType": "explorer",
+            "runId": "wf_transcript_only",
+            "cwd": "/tmp/imported"
+        })
+        .to_string(),
+    )
+    .expect("write imported agent metadata");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_indexed.json",
+        serde_json::json!({
+            "run_id": "wf_indexed",
+            "workflow_name": "indexed",
+            "status": "completed",
+            "ended_unix_ms": 40_u64,
+            "output_preview": "Script completed\nindex-ok"
+        }),
+    );
+    write_workflow_transcript_snapshot(
+        &chat,
+        "wf_indexed",
+        serde_json::json!({
+            "run_id": "wf_indexed",
+            "workflow_name": "transcript-shadow",
+            "status": "completed",
+            "ended_unix_ms": 100_u64,
+            "output_preview": "should not render"
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("- completed imported `wf_transcript_only`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Recovered from transcript metadata"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("script: `{}`", imported_script_path.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "transcripts: `{}`",
+            imported_transcript_dir.display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Script completed / import-ok"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- completed indexed `wf_indexed`"),
+        "{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("- completed indexed `wf_indexed`").count(),
+        1,
+        "{rendered}"
+    );
+    assert!(!rendered.contains("transcript-shadow"), "{rendered}");
+    assert!(!rendered.contains("should not render"), "{rendered}");
+
+    submit_composer_text(&mut chat, "/workflows wf_transcript_only");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Workflow run `wf_transcript_only`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("Run dir: `{}`", imported_run_dir.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("Script: `{}`", imported_script_path.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "Transcripts: `{}`",
+            imported_transcript_dir.display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Script completed\nimport-ok"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript prompt: inspect imported transcript"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  metadata: task `/root/workflow_import_1`; type `explorer`; run `wf_transcript_only`; cwd `/tmp/imported`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript final: import transcript final"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_loads_claude_native_session_layout() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let runs_dir = chat.config.codex_home.join("workflow-runs");
+    let session_dir = runs_dir.join("claude-session-import");
+    let workflows_dir = session_dir.join("workflows");
+    let sidechain_dir = session_dir
+        .join("subagents")
+        .join("workflows")
+        .join("wf_claude_native");
+    let script_path = session_dir.join("workflows").join("native-release.js");
+    std::fs::create_dir_all(&workflows_dir).expect("create claude workflow dir");
+    std::fs::create_dir_all(&sidechain_dir).expect("create claude sidechain dir");
+    std::fs::write(
+        workflows_dir.join("wf_claude_native.json"),
+        serde_json::json!({
+            "runId": "wf_claude_native",
+            "workflowName": "native-import",
+            "description": "Claude native split layout",
+            "status": "completed",
+            "scriptPath": script_path.display().to_string(),
+            "endedUnixMs": 60_u64,
+            "workflowProgress": [
+                {
+                    "type": "workflow_agent",
+                    "index": 1_u64,
+                    "label": "Native review",
+                    "agentId": "/root/workflow_native_1",
+                    "state": "done",
+                    "lastProgressAt": 55_u64,
+                    "resultPreview": "native reviewed"
+                }
+            ],
+            "outputPreview": "Script completed\nnative-ok"
+        })
+        .to_string(),
+    )
+    .expect("write claude native workflow snapshot");
+    std::fs::write(
+        sidechain_dir.join("agent-root_workflow_native_1.jsonl"),
+        concat!(
+            r#"{"type":"user","uuid":"u1","isSidechain":true,"message":{"content":[{"type":"text","text":"inspect native claude layout"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":true,"message":{"content":[{"type":"text","text":"native transcript final"}]}}"#,
+            "\n"
+        ),
+    )
+    .expect("write claude native sidechain transcript");
+    std::fs::write(
+        sidechain_dir.join("agent-root_workflow_native_1.meta.json"),
+        serde_json::json!({
+            "agentId": "/root/workflow_native_1",
+            "taskName": "/root/workflow_native_1",
+            "agentType": "explorer",
+            "runId": "wf_claude_native",
+            "cwd": "/tmp/native-import"
+        })
+        .to_string(),
+    )
+    .expect("write claude native sidechain metadata");
+
+    chat.dispatch_command(SlashCommand::Workflows);
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("- completed native-import `wf_claude_native`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("script: `{}`", script_path.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("transcripts: `{}`", sidechain_dir.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("actions: detail `/workflows wf_claude_native`; resume `/workflows resume wf_claude_native`; retry `/workflows retry wf_claude_native`; save `/workflows save wf_claude_native <name>`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Script completed / native-ok"),
+        "{rendered}"
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_claude_native");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Workflow run `wf_claude_native`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("Run dir: `{}`", sidechain_dir.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("Transcripts: `{}`", sidechain_dir.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Actions: detail `/workflows wf_claude_native`; resume `/workflows resume wf_claude_native`; retry `/workflows retry wf_claude_native`; save `/workflows save wf_claude_native <name>`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  metadata: task `/root/workflow_native_1`; type `explorer`; run `wf_claude_native`; cwd `/tmp/native-import`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript prompt: inspect native claude layout"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript final: native transcript final"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_accepts_camel_case_snapshot_fields() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_camel.json",
+        serde_json::json!({
+            "runId": "wf_camel",
+            "workflowName": "camel",
+            "metadataName": "camel-meta",
+            "description": "Camel snapshot",
+            "inputSchema": "{ type: 'object' }",
+            "status": "completed",
+            "cellId": "cell-camel",
+            "sourceKind": "script_path",
+            "sourceName": "camel-source",
+            "sourcePath": "/tmp/workflows/camel-source.js",
+            "runDir": "/tmp/workflows/wf_camel",
+            "scriptPath": "/tmp/workflows/wf_camel/script.js",
+            "transcriptDir": "/tmp/workflows/wf_camel/transcripts",
+            "resumeFromRunId": "wf_prior",
+            "scriptHash": "fnv1a64:camel",
+            "endedUnixMs": 50_u64,
+            "durationMs": 12_u64,
+            "statusHistory": [
+                { "event": "started", "unixMs": 40_u64 },
+                { "event": "completed", "status": "completed", "unixMs": 50_u64, "message": "done" }
+            ],
+            "progress": [
+                {
+                    "event": "phase",
+                    "unixMs": 45_u64,
+                    "workflow": "camel",
+                    "phase": "scan",
+                    "message": "scanning"
+                }
+            ],
+            "outputPreview": "Script completed\ncamel-ok"
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("- completed camel `wf_camel` (cell `cell-camel`)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("script: `/tmp/workflows/wf_camel/script.js`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("source: script-path `camel-source`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("transcripts: `/tmp/workflows/wf_camel/transcripts`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("resumed from: `wf_prior`"), "{rendered}");
+    assert!(
+        rendered.contains("progress: phase workflow `camel` phase `scan` - scanning"),
+        "{rendered}"
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_camel");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Workflow run `wf_camel`"), "{rendered}");
+    assert!(rendered.contains("Metadata: `camel-meta`"), "{rendered}");
+    assert!(rendered.contains("Input schema:"), "{rendered}");
+    assert!(
+        rendered.contains("Run dir: `/tmp/workflows/wf_camel`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Script hash: `fnv1a64:camel`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Duration: 12 ms"), "{rendered}");
+    assert!(
+        rendered.contains("Source: script-path `camel-source`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Source path: `/tmp/workflows/camel-source.js`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("- completed at 50 - done"), "{rendered}");
+    assert!(
+        rendered.contains("- phase workflow `camel` phase `scan` - scanning at 45"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_renders_claude_shaped_workflow_progress() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let run_dir = chat.config.codex_home.join("claude-progress-run");
+    let transcript_dir = run_dir.join("transcripts");
+    std::fs::create_dir_all(&transcript_dir).expect("create claude agent transcript dir");
+    std::fs::write(
+        transcript_dir.join("agent-root_workflow_release_1.jsonl"),
+        concat!(
+            r#"{"type":"system","uuid":"s1","isSidechain":true,"message":{"content":"ignored system row"}}"#,
+            "\n",
+            r#"{"type":"user","uuid":"u1","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","cwd":"/tmp/workflows","version":"test","entrypoint":"workflow","message":{"content":[{"type":"text","text":"full compile docs prompt"}]}}"#,
+            "\n",
+            r#"{"type":"permission-mode","uuid":"p1","isSidechain":true,"mode":"default"}"#,
+            "\n",
+            r##"{"type":"assistant","uuid":"a1","parentUuid":"u1","logicalParentUuid":"u1","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","cwd":"/tmp/workflows","version":"test","entrypoint":"workflow","message":{"content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"planned docs outline"}]},{"type":"tool_use","id":"toolu_glob_docs","name":"Glob","input":{"pattern":"docs/**/*.md"}}]}}"##,
+            "\n",
+            r##"{"type":"assistant","uuid":"a2","parentUuid":"a1","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","message":{"content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"checked docs structure"}]},{"type":"tool_use","id":"toolu_read_docs","name":"Read","input":{"file_path":"docs.md"}}]}}"##,
+            "\n",
+            r##"{"type":"user","uuid":"u2","parentUuid":"a2","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","sourceToolAssistantUUID":"a1","toolUseResult":"docs.md"}"##,
+            "\n",
+            r##"{"type":"tool_result","uuid":"t2","parentUuid":"a2","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","tool_use_id":"toolu_read_docs","content":[{"type":"text","text":"# Docs"}]}"##,
+            "\n",
+            r##"{"type":"assistant","uuid":"a3","parentUuid":"t2","isSidechain":true,"sessionId":"wf_claude_progress","agentId":"/root/workflow_release_1","message":{"content":[{"type":"text","text":"full docs built final"}]}}"##,
+            "\n"
+        ),
+    )
+    .expect("write claude agent transcript");
+    std::fs::write(
+        transcript_dir.join("agent-root_workflow_release_1.meta.json"),
+        serde_json::json!({
+            "version": "codex-workflow-agent-meta-v1",
+            "agentId": "/root/workflow_release_1",
+            "taskName": "/root/workflow_release_1",
+            "agentName": "Build docs",
+            "sessionKind": "workflow_agent",
+            "parentThreadId": "thread-parent",
+            "agentType": "explorer",
+            "model": "gpt-5.5",
+            "reasoningEffort": "xhigh",
+            "serviceTier": "priority",
+            "nickname": "Ada",
+            "toolUseId": "toolu_spawn_docs",
+            "runId": "wf_claude_progress",
+            "cellId": "cell-claude",
+            "cwd": "/tmp/workflows",
+            "gitBranch": "feature/workflows",
+            "worktreePath": "/tmp/workflows/.codex/worktrees/docs",
+            "author": "/root/workflow_release_1",
+            "recipient": "/root"
+        })
+        .to_string(),
+    )
+    .expect("write claude agent metadata");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_claude_progress.json",
+        serde_json::json!({
+            "runId": "wf_claude_progress",
+            "workflowName": "imported",
+            "description": "Claude-shaped progress",
+            "status": "running",
+            "cellId": "cell-claude",
+            "runDir": run_dir.display().to_string(),
+            "workflowProgress": [
+                {
+                    "type": "workflow_phase",
+                    "index": 1_u64,
+                    "title": "Build",
+                    "lastProgressAt": 100_u64
+                },
+                {
+                    "type": "workflow_agent",
+                    "index": 1_u64,
+                    "label": "Build docs",
+                    "phaseTitle": "Build",
+                    "agentId": "/root/workflow_release_1",
+                    "state": "start",
+                    "lastProgressAt": 110_u64,
+                    "promptPreview": "compile docs"
+                },
+                {
+                    "type": "workflow_agent",
+                    "index": 1_u64,
+                    "label": "Build docs",
+                    "phaseTitle": "Build",
+                    "agentId": "/root/workflow_release_1",
+                    "state": "done",
+                    "lastProgressAt": 140_u64,
+                    "resultPreview": "docs built"
+                },
+                {
+                    "type": "workflow_agent",
+                    "index": 2_u64,
+                    "label": "Lint docs",
+                    "phaseTitle": "Build",
+                    "agentId": "agent-2",
+                    "state": "error",
+                    "lastProgressAt": 150_u64,
+                    "promptPreview": "lint docs",
+                    "error": "lint failed"
+                },
+                {
+                    "type": "workflow_log",
+                    "message": "workflow imported",
+                    "lastProgressAt": 160_u64
+                }
+            ]
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("- running imported `wf_claude_progress` (cell `cell-claude`)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("progress: workflow_log - workflow imported"),
+        "{rendered}"
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_claude_progress");
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Summary:"), "{rendered}");
+    assert!(rendered.contains("Phases (1):"), "{rendered}");
+    assert!(rendered.contains("- Build: reached at 100"), "{rendered}");
+    assert!(rendered.contains("Agents (2):"), "{rendered}");
+    assert!(
+        rendered.contains("- Build docs: completed at 140 - docs built"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- Lint docs: failed at 150 - lint docs"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Agent details (2):"), "{rendered}");
+    assert!(
+        rendered.contains("- Build docs (#1, /root/workflow_release_1): completed at 140"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("  prompt: compile docs"), "{rendered}");
+    assert!(rendered.contains("  result: docs built"), "{rendered}");
+    assert!(
+        rendered.contains("  transcript prompt: full compile docs prompt"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "  metadata: task `/root/workflow_release_1`; agent `Build docs`; session `workflow_agent`; parent thread `thread-parent`; type `explorer`; model `gpt-5.5`; effort `xhigh`; tier `priority`; nick `Ada`; tool `toolu_spawn_docs`; run `wf_claude_progress`; cell `cell-claude`; cwd `/tmp/workflows`; branch `feature/workflows`; worktree `/tmp/workflows/.codex/worktrees/docs`; author `/root/workflow_release_1`; recipient `/root`"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript reasoning: planned docs outline; checked docs structure"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            r#"  activity: Glob {"pattern":"docs/**/*.md"} => docs.md; Read {"file_path":"docs.md"} => # Docs"#
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript final: full docs built final"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("transcript skipped:"), "{rendered}");
+    assert!(
+        rendered.contains("- Lint docs (#2, agent-2): failed at 150"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("  error: lint failed"), "{rendered}");
+    assert!(
+        rendered.contains(
+            "- workflow_agent #2 phase `Build` agent `Lint docs` state `error` - lint docs (error: lint failed) at 150"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- workflow_log - workflow imported at 160"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_detail_renders_raw_agent_transcript_notification_records() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let run_dir = chat.config.codex_home.join("raw-agent-transcript-run");
+    let transcript_dir = run_dir.join("transcripts");
+    std::fs::create_dir_all(&transcript_dir).expect("create raw agent transcript dir");
+    std::fs::write(
+        transcript_dir.join("agent-root_workflow_release_1.jsonl"),
+        concat!(
+            r##"{"role":"assistant","content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"planned raw child history"}]}]}"##,
+            "\n",
+            r##"{"role":"assistant","content":[{"type":"tool_use","id":"toolu_glob","name":"Glob","input":{"pattern":"src/**/*.rs"}}]}"##,
+            "\n",
+            r##"{"type":"tool_result","tool_use_id":"toolu_glob","content":"src/lib.rs"}"##,
+            "\n",
+            r##"{"role":"assistant","content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"read raw child history"}]}]}"##,
+            "\n",
+            r##"{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"src/lib.rs"}}]}"##,
+            "\n",
+            r##"{"type":"tool_result","tool_use_id":"toolu_read","content":"pub fn ok() {}"}"##,
+            "\n",
+            r##"{"role":"assistant","content":[{"type":"text","text":"review complete"}]}"##,
+            "\n"
+        ),
+    )
+    .expect("write raw agent transcript");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_raw_transcript.json",
+        serde_json::json!({
+            "runId": "wf_raw_transcript",
+            "workflowName": "release",
+            "description": "Raw agent transcript",
+            "status": "running",
+            "cellId": "cell-raw",
+            "runDir": run_dir.display().to_string(),
+            "workflowProgress": [
+                {
+                    "type": "workflow_agent",
+                    "index": 1_u64,
+                    "label": "Review",
+                    "phaseTitle": "Build",
+                    "agentId": "/root/workflow_release_1",
+                    "state": "done",
+                    "lastProgressAt": 140_u64,
+                    "resultPreview": "review summarized"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_raw_transcript");
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered
+            .contains("  transcript reasoning: planned raw child history; read raw child history"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            r#"  activity: Glob {"pattern":"src/**/*.rs"} => src/lib.rs; Read {"file_path":"src/lib.rs"} => pub fn ok() {}"#
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  transcript final: review complete"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_lists_active_run_registry_without_recent_duplicate() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let running = serde_json::json!({
+        "run_id": "wf_running",
+        "workflow_name": "release",
+        "description": "Release workflow",
+        "status": "running",
+        "cell_id": "cell-42",
+        "transcript_dir": "/tmp/workflows/wf_running/transcripts",
+        "ended_unix_ms": 30_u64,
+        "progress": [
+            {
+                "event": "phase",
+                "unix_ms": 40_u64,
+                "workflow": "release",
+                "phase": "publish",
+                "message": "publishing"
+            }
+        ]
+    });
+    write_workflow_run_snapshot(&chat, "wf_running.json", running.clone());
+    write_active_workflow_run_marker(&chat, "wf_running.json", running);
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_done.json",
+        serde_json::json!({
+            "run_id": "wf_done",
+            "workflow_name": "docs",
+            "description": "Docs workflow",
+            "status": "completed",
+            "ended_unix_ms": 20_u64,
+            "output_preview": "Script completed\nok"
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Active registry:"), "{rendered}");
+    assert!(rendered.contains("Active runs:"), "{rendered}");
+    assert!(
+        rendered.contains("- running release `wf_running` (cell `cell-42`)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("transcripts: `/tmp/workflows/wf_running/transcripts`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("progress: phase workflow `release` phase `publish` - publishing"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "actions: detail `/workflows wf_running`; pause `/workflows pause wf_running`; cancel `/workflows cancel wf_running`"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Recent runs:"), "{rendered}");
+    assert!(
+        rendered.contains("- completed docs `wf_done`"),
+        "{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("- running release `wf_running`").count(),
+        1,
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_action_summaries_include_running_agent_controls() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_agent_controls.json",
+        serde_json::json!({
+        "run_id": "wf_agent_controls",
+        "workflow_name": "release",
+        "description": "Release workflow",
+        "status": "running",
+        "cell_id": "cell-123",
+        "progress": [
+                {
+                    "event": "workflow_agent",
+                    "state": "running",
+                    "agent": "build_agent",
+                    "agentId": "/root/workflow_release_1",
+                    "message": "build artifacts"
+                },
+                {
+                    "event": "agent_waiting",
+                    "agent": "build_agent",
+                    "agentId": "/root/workflow_release_1",
+                    "message": "no agent update for 60s",
+                    "data": { "elapsedMs": 60000, "timeoutMs": 180000 }
+                }
+            ]
+        }),
+    );
+
+    let expected_actions = concat!(
+        "detail `/workflows wf_agent_controls`; ",
+        "pause `/workflows pause wf_agent_controls`; ",
+        "cancel `/workflows cancel wf_agent_controls`; ",
+        "interrupt-agent `/workflows interrupt-agent wf_agent_controls /root/workflow_release_1`; ",
+        "skip-agent `/workflows skip-agent wf_agent_controls /root/workflow_release_1`; ",
+        "retry-agent `/workflows retry-agent wf_agent_controls /root/workflow_release_1`; ",
+        "restart-agent `/workflows restart-agent wf_agent_controls /root/workflow_release_1`"
+    );
+
+    chat.dispatch_command(SlashCommand::Workflows);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains(&format!("actions: {expected_actions}")),
+        "{rendered}"
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_agent_controls");
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains(&format!("Actions: {expected_actions}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- build_agent (/root/workflow_release_1): running"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("no agent update for 60s"), "{rendered}");
+}
+
+#[tokio::test]
+async fn slash_workflows_run_id_shows_run_detail() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let run_dir = chat
+        .config
+        .codex_home
+        .join("workflow-runs")
+        .join("wf_detail");
+    std::fs::create_dir_all(&run_dir).expect("create run dir");
+    std::fs::write(
+        run_dir.join("journal.jsonl"),
+        concat!(
+            r#"{"type":"started","key":"codex-v2:first","agentId":"agent-one"}"#,
+            "\n",
+            r#"{"type":"started","key":"codex-v2:first","agentId":"agent-two"}"#,
+            "\n",
+            r#"{"type":"result","key":"codex-v2:first","agentId":"agent-two","result":"ok"}"#,
+            "\n",
+            r#"{"type":"child_result","key":"codex-child-v1:first","child":"smoke","childRunId":"smoke#1","result":"smoke-ok"}"#,
+            "\n",
+        ),
+    )
+    .expect("write journal");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_detail.json",
+        serde_json::json!({
+            "run_id": "wf_detail",
+            "workflow_name": "release",
+            "metadata_name": "release-meta",
+            "description": "Release workflow",
+            "input_schema": "{ type: 'object', properties: { channel: { type: 'string' } } }",
+            "status": "completed",
+            "cell_id": "cell-9",
+            "session_id": "session-9",
+            "thread_id": "thread-9",
+            "workflow_tool_call_id": "toolu_workflow_9",
+            "cwd": "/tmp/project",
+            "git_branch": "feature/workflows",
+            "run_dir": run_dir.display().to_string(),
+            "script_path": run_dir.join("script.js").display().to_string(),
+            "transcript_dir": run_dir.join("transcripts").display().to_string(),
+            "script_hash": "fnv1a64:abcdef1234567890",
+            "source": {
+                "kind": "named",
+                "name": "release",
+                "path": "/tmp/workflows/release.js"
+            },
+            "resume_from_run_id": "wf_previous",
+            "max_output_tokens": 2048,
+            "duration_ms": 42_u64,
+            "args": { "channel": "alpha" },
+            "status_history": [
+                { "event": "started", "unix_ms": 100_u64 },
+                { "event": "running", "status": "running", "unix_ms": 120_u64 },
+                { "event": "completed", "status": "completed", "unix_ms": 142_u64, "message": "Script completed\nok" }
+            ],
+            "progress": [
+                { "event": "workflow_start", "unix_ms": 101_u64, "workflow": "release", "message": "Release workflow" },
+                { "event": "phase", "unix_ms": 110_u64, "workflow": "release", "phase": "build", "message": "artifacts" },
+                { "event": "agent_start", "unix_ms": 120_u64, "workflow": "release", "agent": "build_agent", "message": "build artifacts" },
+                { "event": "agent_complete", "unix_ms": 130_u64, "workflow": "release", "agent": "build_agent" },
+                {
+                    "event": "child_complete",
+                    "unix_ms": 136_u64,
+                    "workflow": "release",
+                    "child": "smoke",
+                    "child_index": 1_u64,
+                    "child_run_id": "smoke#1"
+                },
+                {
+                    "event": "child_failed",
+                    "unix_ms": 138_u64,
+                    "workflow": "release",
+                    "child": "smoke",
+                    "message": "boom",
+                    "data": {
+                        "childIndex": 2_u64,
+                        "childRunId": "smoke#2",
+                        "error": "boom"
+                    }
+                },
+                {
+                    "event": "pipeline_failed",
+                    "unix_ms": 140_u64,
+                    "workflow": "release",
+                    "message": "item 3 stage 1: stage failed",
+                    "data": {
+                        "itemIndex": 3_u64,
+                        "stageIndex": 1_u64,
+                        "error": "stage failed"
+                    }
+                },
+                {
+                    "event": "workflow_complete",
+                    "unix_ms": 142_u64,
+                    "workflow": "release",
+                    "data": {
+                        "agentCount": 1_u64,
+                        "childCount": 2_u64,
+                        "logCount": 42_u64,
+                        "logSuppressed": true
+                    }
+                }
+            ],
+            "output_preview": "Script completed\nok"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows wf_detail");
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflows detail message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Workflow run `wf_detail`"), "{rendered}");
+    assert!(rendered.contains("Status: completed"), "{rendered}");
+    assert!(rendered.contains("Metadata: `release-meta`"), "{rendered}");
+    assert!(rendered.contains("Input schema:"), "{rendered}");
+    assert!(
+        rendered.contains("{ type: 'object', properties: { channel: { type: 'string' } } }"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Cell: `cell-9`"), "{rendered}");
+    assert!(rendered.contains("Session: `session-9`"), "{rendered}");
+    assert!(rendered.contains("Thread: `thread-9`"), "{rendered}");
+    assert!(
+        rendered.contains("Workflow tool: `toolu_workflow_9`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Cwd: `/tmp/project`"), "{rendered}");
+    assert!(
+        rendered.contains("Branch: `feature/workflows`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("Run dir: `{}`", run_dir.display())),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "Agent journal: `{}`",
+            run_dir.join("journal.jsonl").display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Journal entries: 2 started, 1 result, 1 child result"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Journal agents (2):"), "{rendered}");
+    assert!(
+        rendered.contains("- agent-one: started `codex-v2:first`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- agent-two: completed `codex-v2:first`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Journal child workflows (1):"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- smoke#1: completed `smoke` `codex-child-v1:first`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Source: named `release`"), "{rendered}");
+    assert!(
+        rendered.contains("Source path: `/tmp/workflows/release.js`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "Script: `{}`",
+            run_dir.join("script.js").display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "Transcripts: `{}`",
+            run_dir.join("transcripts").display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Script hash: `fnv1a64:abcdef1234567890`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Max output tokens: 2048"), "{rendered}");
+    assert!(
+        rendered.contains("Resumed from: `wf_previous`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("\"channel\": \"alpha\""), "{rendered}");
+    assert!(
+        rendered.contains(
+            "Actions: detail `/workflows wf_detail`; resume `/workflows resume wf_detail`; retry `/workflows retry wf_detail`; save `/workflows save wf_detail <name>`"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("Run metrics: 1 agent; 2 child workflows; 42 logs (suppressed); 2 failures"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Summary:"), "{rendered}");
+    assert!(rendered.contains("Phases (1):"), "{rendered}");
+    assert!(
+        rendered.contains("- build: reached at 110 - artifacts"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Agents (1):"), "{rendered}");
+    assert!(
+        rendered.contains("- build_agent: completed at 130"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Child workflows (2):"), "{rendered}");
+    assert!(
+        rendered.contains("- smoke#1: completed at 136"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- smoke#2: failed at 138 - boom"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("History:"), "{rendered}");
+    assert!(rendered.contains("- started at 100"), "{rendered}");
+    assert!(rendered.contains("- running at 120"), "{rendered}");
+    assert!(
+        rendered.contains("- completed at 142 - Script completed / ok"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Progress:"), "{rendered}");
+    assert!(
+        rendered.contains("- workflow_start workflow `release` - Release workflow at 101"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- phase workflow `release` phase `build` - artifacts at 110"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "- agent_start workflow `release` agent `build_agent` - build artifacts at 120"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- agent_complete workflow `release` agent `build_agent` at 130"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- child_complete workflow `release` child `smoke` run `smoke#1` at 136"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "- child_failed workflow `release` child `smoke` run `smoke#2` - boom at 138"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "- pipeline_failed workflow `release` item 3 stage 1 - item 3 stage 1: stage failed at 140"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Script completed"), "{rendered}");
+}
+
+#[tokio::test]
+async fn slash_workflows_resume_submits_resume_invocation_prompt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_resume.json",
+        serde_json::json!({
+            "run_id": "wf_resume",
+            "workflow_name": "release",
+            "status": "completed",
+            "script_path": "/tmp/workflows/wf_resume/script.js",
+            "script_hash": "fnv1a64:abcdef1234567890",
+            "args": { "channel": "alpha" },
+            "output_preview": "Script completed\nok"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows resume wf_resume");
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(text.contains("Resume workflow run `wf_resume`"), "{text}");
+            assert!(text.contains("resumeFromRunId: \"wf_resume\""), "{text}");
+            assert!(
+                text.contains("Do not run the workflow script manually"),
+                "{text}"
+            );
+            assert!(
+                text.contains("Prior script path: /tmp/workflows/wf_resume/script.js"),
+                "{text}"
+            );
+            assert!(
+                text.contains("Prior script hash: fnv1a64:abcdef1234567890"),
+                "{text}"
+            );
+            assert!(text.contains("\"channel\": \"alpha\""), "{text}");
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected workflow resume to submit user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_retry_submits_retry_invocation_prompt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_retry.json",
+        serde_json::json!({
+            "run_id": "wf_retry",
+            "workflow_name": "release",
+            "status": "failed",
+            "script_path": "/tmp/workflows/wf_retry/script.js",
+            "script_hash": "fnv1a64:feedface12345678",
+            "args": { "channel": "alpha" },
+            "error": "Script failed\nboom"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows retry wf_retry");
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(items.len(), 1, "{items:?}");
+            let UserInput::Text {
+                text,
+                text_elements,
+            } = &items[0]
+            else {
+                panic!("expected text user input, got {items:?}");
+            };
+            assert!(text.contains("Retry workflow run `wf_retry`"), "{text}");
+            assert!(text.contains("workflow tool"), "{text}");
+            assert!(
+                text.contains("scriptPath: \"/tmp/workflows/wf_retry/script.js\""),
+                "{text}"
+            );
+            assert!(text.contains("Do not use `resumeFromRunId`"), "{text}");
+            assert!(
+                text.contains("Prior script hash: fnv1a64:feedface12345678"),
+                "{text}"
+            );
+            assert!(text.contains("\"channel\": \"alpha\""), "{text}");
+            assert!(text_elements.is_empty(), "{text_elements:?}");
+        }
+        other => panic!("expected workflow retry to submit user turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_workflows_retry_rejects_run_without_script_path() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_no_script.json",
+        serde_json::json!({
+            "run_id": "wf_no_script",
+            "workflow_name": "release",
+            "status": "failed"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows retry wf_no_script");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Workflow run `wf_no_script` has no script path to retry."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_save_copies_run_script_into_workflow_directory() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let workflow_dir = chat.config.codex_home.join("project-workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    let script_path = chat
+        .config
+        .codex_home
+        .join("workflow-runs")
+        .join("wf_save")
+        .join("script.js");
+    std::fs::create_dir_all(script_path.parent().expect("script parent"))
+        .expect("create script parent");
+    let script = "export const meta = { name: 'release', description: 'Release workflow' };\nphase('ship');\n";
+    std::fs::write(&script_path, script).expect("write run script");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_save.json",
+        serde_json::json!({
+            "run_id": "wf_save",
+            "workflow_name": "release",
+            "status": "completed",
+            "script_path": script_path.display().to_string(),
+            "output_preview": "ok"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows save wf_save saved-release");
+
+    let target_path = workflow_dir.join("saved-release.js");
+    let saved = std::fs::read_to_string(&target_path).expect("read saved workflow");
+    assert_eq!(saved, script);
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Saved workflow `saved-release`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Use /workflows run saved-release or /saved-release to run it."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_save_rejects_script_without_metadata() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let workflow_dir = chat.config.codex_home.join("project-workflows");
+    chat.config.workflows.workflow_dirs = vec![workflow_dir.clone()];
+    let script_path = chat
+        .config
+        .codex_home
+        .join("workflow-runs")
+        .join("wf_bad_script")
+        .join("script.js");
+    std::fs::create_dir_all(script_path.parent().expect("script parent"))
+        .expect("create script parent");
+    std::fs::write(&script_path, "phase('missing meta');\n").expect("write invalid run script");
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_bad_script.json",
+        serde_json::json!({
+            "run_id": "wf_bad_script",
+            "workflow_name": "release",
+            "status": "completed",
+            "script_path": script_path.display().to_string()
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows save wf_bad_script saved-release");
+
+    assert!(!workflow_dir.join("saved-release.js").exists());
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("script does not contain a valid `export const meta` header"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_cancel_submits_direct_cancel_for_running_run() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "transcript_dir": "/tmp/workflows/wf_running/transcripts"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows cancel wf_running");
+
+    assert_eq!(
+        op_rx.try_recv().expect("expected workflow cancel op"),
+        Op::WorkflowCancel {
+            run_id: "wf_running".to_string(),
+            cell_id: "cell-123".to_string(),
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Cancellation requested for workflow run `wf_running`."),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Cell `cell-123` will be terminated directly."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_cancel_submits_direct_cancel_for_paused_run() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_paused.json",
+        serde_json::json!({
+            "run_id": "wf_paused",
+            "workflow_name": "release",
+            "status": "paused",
+            "cell_id": "cell-123"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows cancel wf_paused");
+
+    assert_eq!(
+        op_rx.try_recv().expect("expected workflow cancel op"),
+        Op::WorkflowCancel {
+            run_id: "wf_paused".to_string(),
+            cell_id: "cell-123".to_string(),
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Cancellation requested for workflow run `wf_paused`."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_pause_submits_direct_pause_for_running_run() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows pause wf_running");
+
+    assert_eq!(
+        op_rx.try_recv().expect("expected workflow pause op"),
+        Op::WorkflowPause {
+            run_id: "wf_running".to_string(),
+            cell_id: "cell-123".to_string(),
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Pause requested for workflow run `wf_running`."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_continue_submits_direct_continue_for_paused_run() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_paused.json",
+        serde_json::json!({
+            "run_id": "wf_paused",
+            "workflow_name": "release",
+            "status": "paused",
+            "cell_id": "cell-123"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows continue wf_paused");
+
+    assert_eq!(
+        op_rx.try_recv().expect("expected workflow continue op"),
+        Op::WorkflowContinue {
+            run_id: "wf_paused".to_string(),
+            cell_id: "cell-123".to_string(),
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Continue requested for workflow run `wf_paused`."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_interrupt_agent_submits_direct_interrupt_for_running_agent() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "progress": [
+                {
+                    "event": "agent_start",
+                    "agent": "build_agent",
+                    "agent_id": "/root/workflow_release_1",
+                    "message": "build artifacts"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(
+        &mut chat,
+        "/workflows interrupt-agent wf_running /root/workflow_release_1",
+    );
+
+    assert_eq!(
+        op_rx
+            .try_recv()
+            .expect("expected workflow agent interrupt op"),
+        Op::WorkflowAgentInterrupt {
+            run_id: "wf_running".to_string(),
+            agent_id: "/root/workflow_release_1".to_string(),
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Interrupt requested for workflow run `wf_running` agent `/root/workflow_release_1`."
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("The agent turn will be interrupted directly."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_skip_agent_submits_selected_agent_control() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "progress": [
+                {
+                    "event": "agent_start",
+                    "agent": "build_agent",
+                    "agent_id": "/root/workflow_release_1",
+                    "message": "build artifacts"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(
+        &mut chat,
+        "/workflows skip-agent wf_running /root/workflow_release_1",
+    );
+
+    assert_eq!(
+        op_rx
+            .try_recv()
+            .expect("expected workflow agent control op"),
+        Op::WorkflowAgentControl {
+            run_id: "wf_running".to_string(),
+            agent_id: "/root/workflow_release_1".to_string(),
+            action: codex_protocol::protocol::WorkflowAgentControlAction::Skip,
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Skip requested for workflow run `wf_running` agent `/root/workflow_release_1`."
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("The workflow runtime will apply the request without cancelling the run."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_retry_agent_submits_selected_agent_control() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "progress": [
+                {
+                    "event": "agent_start",
+                    "agent": "build_agent",
+                    "agent_id": "/root/workflow_release_1"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(
+        &mut chat,
+        "/workflows retry-agent wf_running /root/workflow_release_1",
+    );
+
+    assert_eq!(
+        op_rx
+            .try_recv()
+            .expect("expected workflow agent control op"),
+        Op::WorkflowAgentControl {
+            run_id: "wf_running".to_string(),
+            agent_id: "/root/workflow_release_1".to_string(),
+            action: codex_protocol::protocol::WorkflowAgentControlAction::Retry,
+        }
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_restart_agent_submits_selected_agent_control() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "progress": [
+                {
+                    "event": "workflow_agent",
+                    "state": "running",
+                    "agent": "build_agent",
+                    "agentId": "/root/workflow_release_1"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(
+        &mut chat,
+        "/workflows restart-agent wf_running /root/workflow_release_1",
+    );
+
+    assert_eq!(
+        op_rx
+            .try_recv()
+            .expect("expected workflow agent control op"),
+        Op::WorkflowAgentControl {
+            run_id: "wf_running".to_string(),
+            agent_id: "/root/workflow_release_1".to_string(),
+            action: codex_protocol::protocol::WorkflowAgentControlAction::Retry,
+        }
+    );
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Restart requested for workflow run `wf_running` agent `/root/workflow_release_1`."
+        ),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_interrupt_agent_rejects_non_running_agent() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_running.json",
+        serde_json::json!({
+            "run_id": "wf_running",
+            "workflow_name": "release",
+            "status": "running",
+            "cell_id": "cell-123",
+            "progress": [
+                {
+                    "event": "agent_start",
+                    "agent": "build_agent",
+                    "agent_id": "/root/workflow_release_1"
+                },
+                {
+                    "event": "agent_complete",
+                    "agent": "build_agent",
+                    "agent_id": "/root/workflow_release_1"
+                }
+            ]
+        }),
+    );
+
+    submit_composer_text(
+        &mut chat,
+        "/workflows interrupt-agent wf_running /root/workflow_release_1",
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Workflow run `wf_running` agent `/root/workflow_release_1` is `completed` and cannot be interrupted."
+        ),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_cancel_rejects_completed_run() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_done.json",
+        serde_json::json!({
+            "run_id": "wf_done",
+            "workflow_name": "release",
+            "status": "completed",
+            "cell_id": "cell-123"
+        }),
+    );
+
+    submit_composer_text(&mut chat, "/workflows cancel wf_done");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Workflow run `wf_done` is `completed` and cannot be cancelled."),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_approval_emits_named_workflow_update() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/workflows approval sample:release allow");
+
+    let mut found = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::UpdateNamedWorkflowApproval {
+            workflow_name,
+            approval,
+        } = event
+        {
+            found = Some((workflow_name, approval));
+            break;
+        }
+    }
+    assert_eq!(
+        found,
+        Some((
+            "sample:release".to_string(),
+            Some(codex_config::types::WorkflowApproval::Allow)
+        ))
+    );
+}
+
+#[tokio::test]
+async fn slash_workflows_enabled_emits_named_workflow_update() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/workflows enabled sample:release off");
+    submit_composer_text(&mut chat, "/workflows enable docs");
+
+    let mut found = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::UpdateNamedWorkflowEnabled {
+            workflow_name,
+            enabled,
+        } = event
+        {
+            found.push((workflow_name, enabled));
+        }
+    }
+    assert_eq!(
+        found,
+        vec![
+            ("sample:release".to_string(), Some(false)),
+            ("docs".to_string(), Some(true)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn slash_workflow_status_stays_compact_without_run_browser() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    write_workflow_run_snapshot(
+        &chat,
+        "wf_visible_only_in_plural.json",
+        serde_json::json!({
+            "run_id": "wf_visible_only_in_plural",
+            "workflow_name": "release",
+            "status": "completed",
+            "ended_unix_ms": 10_u64
+        }),
+    );
+
+    chat.dispatch_command(SlashCommand::Workflow);
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one /workflow info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Workflows:"), "{rendered}");
+    assert!(rendered.contains("Runtime:"), "{rendered}");
+    assert!(rendered.contains("Approval: auto"), "{rendered}");
+    assert!(!rendered.contains("Recent runs:"), "{rendered}");
+    assert!(
+        !rendered.contains("wf_visible_only_in_plural"),
+        "{rendered}"
+    );
+}
+
 #[tokio::test]
 async fn slash_quit_requests_exit() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -2245,6 +4695,35 @@ async fn user_turn_carries_service_tier_after_fast_toggle() {
             ..
         } if service_tier == ServiceTier::Fast.request_value() => {}
         other => panic!("expected Op::UserTurn with fast service tier, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn disabled_ultracode_keyword_trigger_does_not_set_workflow_mode() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.workflows.keyword_trigger_enabled = false;
+
+    submit_composer_text(&mut chat, "please use ultracode for this");
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            collaboration_mode,
+            items,
+            ..
+        } => {
+            let collaboration_mode = collaboration_mode.expect("default collaboration mode");
+            assert_eq!(WorkflowMode::Disabled, collaboration_mode.workflow_mode());
+            assert_eq!(None, collaboration_mode.reasoning_effort());
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "please use ultracode for this".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected normal user turn, got {other:?}"),
     }
 }
 

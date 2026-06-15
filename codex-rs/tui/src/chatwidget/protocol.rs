@@ -77,6 +77,9 @@ impl ChatWidget {
                 self.on_agent_message_delta(notification.delta);
             }
             ServerNotification::PlanDelta(notification) => self.on_plan_delta(notification.delta),
+            ServerNotification::WorkflowProgress(notification) => {
+                self.on_workflow_progress(notification, from_replay);
+            }
             ServerNotification::ReasoningSummaryTextDelta(notification) => {
                 self.on_agent_reasoning_delta(notification.delta);
             }
@@ -247,6 +250,156 @@ impl ChatWidget {
             | ServerNotification::AccountLoginCompleted(_) => {}
             ServerNotification::ContextCompacted(_) => {}
         }
+    }
+
+    fn on_workflow_progress(
+        &mut self,
+        notification: WorkflowProgressNotification,
+        from_replay: bool,
+    ) {
+        if from_replay || !self.bottom_pane.is_task_running() {
+            return;
+        }
+
+        self.bottom_pane.ensure_status_indicator();
+        self.bottom_pane
+            .set_interrupt_hint_visible(/*visible*/ true);
+        self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+        self.set_status(
+            Self::workflow_progress_status_header(&notification),
+            Self::workflow_progress_status_details(&notification),
+            StatusDetailsCapitalization::Preserve,
+            /*details_max_lines*/ 2,
+        );
+        self.request_redraw();
+    }
+
+    fn workflow_progress_status_header(notification: &WorkflowProgressNotification) -> String {
+        match notification.event.as_str() {
+            "workflow_start" => "Workflow running".to_string(),
+            "workflow_complete" | "workflow_completed" => "Workflow complete".to_string(),
+            "workflow_failed" => "Workflow failed".to_string(),
+            "workflow_cancelled" => "Workflow cancelled".to_string(),
+            "workflow_paused" => "Workflow paused".to_string(),
+            "workflow_continued" => "Workflow continued".to_string(),
+            "phase" => notification
+                .phase
+                .as_deref()
+                .filter(|phase| !phase.trim().is_empty())
+                .map(|phase| format!("Workflow: {}", phase.trim()))
+                .unwrap_or_else(|| "Workflow phase".to_string()),
+            "agent_start" => "Workflow agent running".to_string(),
+            "agent_stalled" => "Workflow agent stalled".to_string(),
+            "agent_retry" => "Workflow agent retrying".to_string(),
+            "agent_retry_requested" => "Workflow agent retry requested".to_string(),
+            "agent_skip_requested" => "Workflow agent skip requested".to_string(),
+            "agent_skipped" => "Workflow agent skipped".to_string(),
+            "agent_complete" => "Workflow agent complete".to_string(),
+            "agent_failed" => "Workflow agent failed".to_string(),
+            "agent_interrupted" => "Workflow agent interrupted".to_string(),
+            "child_start" => "Child workflow running".to_string(),
+            "child_complete" => "Child workflow complete".to_string(),
+            "child_failed" => "Child workflow failed".to_string(),
+            "parallel_failed" => "Workflow parallel failed".to_string(),
+            "pipeline_failed" => "Workflow pipeline failed".to_string(),
+            other => format!(
+                "Workflow: {}",
+                Self::humanize_workflow_progress_event(other)
+            ),
+        }
+    }
+
+    fn workflow_progress_status_details(
+        notification: &WorkflowProgressNotification,
+    ) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(workflow) = notification
+            .workflow
+            .as_deref()
+            .map(str::trim)
+            .filter(|workflow| !workflow.is_empty())
+        {
+            parts.push(workflow.to_string());
+        } else if !notification.run_id.trim().is_empty() {
+            parts.push(notification.run_id.trim().to_string());
+        }
+        if let Some(phase) = notification
+            .phase
+            .as_deref()
+            .map(str::trim)
+            .filter(|phase| !phase.is_empty())
+            && notification.event != "phase"
+        {
+            parts.push(format!("phase {phase}"));
+        }
+        if let Some(agent) = notification
+            .agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|agent| !agent.is_empty())
+        {
+            parts.push(format!("agent {agent}"));
+        }
+        if let Some(child) = notification
+            .child
+            .as_deref()
+            .map(str::trim)
+            .filter(|child| !child.is_empty())
+        {
+            parts.push(format!("child {child}"));
+        }
+        if let Some(child_run_id) = notification
+            .child_run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|child_run_id| !child_run_id.is_empty())
+        {
+            parts.push(format!("run {child_run_id}"));
+        } else if let Some(child_index) = notification.child_index {
+            parts.push(format!("child #{child_index}"));
+        }
+        if let Some(step_index) = notification.step_index {
+            parts.push(format!("step {step_index}"));
+        }
+        if let Some(item_index) = notification.item_index {
+            parts.push(format!("item {item_index}"));
+        }
+        if let Some(stage_index) = notification.stage_index {
+            parts.push(format!("stage {stage_index}"));
+        }
+        if let Some(message) = notification
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+        {
+            parts.push(message.to_string());
+        }
+        if let Some(error) = notification
+            .error
+            .as_deref()
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+        {
+            let already_in_message = notification
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains(error));
+            if !already_in_message {
+                parts.push(format!("error: {error}"));
+            }
+        }
+
+        (!parts.is_empty()).then(|| parts.join(" - "))
+    }
+
+    fn humanize_workflow_progress_event(event: &str) -> String {
+        let normalized = event.replace(['_', '-'], " ");
+        let trimmed = normalized.trim();
+        if trimmed.is_empty() {
+            return "progress".to_string();
+        }
+        crate::text_formatting::capitalize_first(trimmed)
     }
 
     pub(super) fn handle_turn_completed_notification(

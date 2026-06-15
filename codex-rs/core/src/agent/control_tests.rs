@@ -630,6 +630,162 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     assert_eq!(captured, Some(expected));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn workflow_transcript_path_records_child_response_items() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let transcript_path = harness
+        ._home
+        .path()
+        .join("workflow-transcripts")
+        .join("agent-worker.jsonl");
+    let spawned_agent = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                workflow_transcript_path: Some(transcript_path.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn_agent should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("child thread should exist");
+    let turn_context = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "should not mirror".to_string(),
+                    }],
+                    phase: None,
+                },
+                assistant_message("child observer result", Some(MessagePhase::FinalAnswer)),
+            ],
+        )
+        .await;
+
+    let transcript = tokio::fs::read_to_string(transcript_path)
+        .await
+        .expect("workflow agent transcript should be written");
+    assert!(!transcript.contains("should not mirror"));
+    let lines = transcript
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json transcript line"))
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1, "{transcript}");
+    assert_eq!(lines[0]["role"], "assistant");
+    assert_eq!(lines[0]["content"][0]["text"], "child observer result");
+    assert_eq!(lines[0]["isSidechain"], true);
+    assert_eq!(lines[0]["agentId"], "/root/worker");
+    assert_eq!(lines[0]["agentName"], "/root/worker");
+    assert_eq!(lines[0]["sessionKind"], "workflow_agent");
+    assert_eq!(lines[0]["parentThreadId"], parent_thread_id.to_string());
+    assert_eq!(
+        lines[0]["sessionId"],
+        child_thread.codex.session.session_id().to_string()
+    );
+    let expected_cwd = turn_context
+        .environments
+        .single_local_environment_cwd()
+        .expect("single local environment cwd")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(lines[0]["cwd"], expected_cwd);
+    assert_eq!(lines[0]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(lines[0]["entrypoint"], "workflow");
+    assert!(
+        lines[0]["uuid"]
+            .as_str()
+            .is_some_and(|uuid| !uuid.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn load_agent_response_history_for_path_returns_registered_child_rollout_response_items() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
+    let spawned_agent = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn_agent should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("child thread should exist");
+    let response_item = assistant_message("child history result", Some(MessagePhase::FinalAnswer));
+    let turn_context = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&response_item))
+        .await;
+    child_thread
+        .codex
+        .session
+        .flush_rollout()
+        .await
+        .expect("child rollout should flush");
+
+    let history = harness
+        .control
+        .load_agent_response_history_for_path(&agent_path)
+        .await
+        .expect("child history should load");
+    assert!(
+        history.iter().any(|item| item == &response_item),
+        "child response item missing from loaded history: {history:?}"
+    );
+    let missing = harness
+        .control
+        .load_agent_response_history_for_path(
+            &AgentPath::try_from("/root/missing").expect("missing agent path"),
+        )
+        .await
+        .expect("missing agent history should not error");
+    assert!(missing.is_empty());
+}
+
 #[tokio::test]
 async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     let (home, mut config) = test_config().await;

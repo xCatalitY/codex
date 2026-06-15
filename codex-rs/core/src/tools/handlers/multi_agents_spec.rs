@@ -255,7 +255,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. Does not return the content; returns either a summary of which agents have updates (if any), or a timeout summary if no mailbox update arrives before the deadline."
+        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. Returns only a summary by default; set include_messages to true only when you need pending mailbox content, such as a workflow helper collecting a spawned agent's final result. Otherwise returns a timeout summary if no mailbox update arrives before the deadline."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -308,16 +308,25 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
 }
 
 pub fn create_interrupt_agent_tool_v2() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "target".to_string(),
-        JsonSchema::string(Some(
-            "Agent id or canonical task name to interrupt (from spawn_agent).".to_string(),
-        )),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some(
+                "Agent id or canonical task name to interrupt (from spawn_agent).".to_string(),
+            )),
+        ),
+        (
+            "reason".to_string(),
+            JsonSchema::string(Some(
+                "Optional machine-readable interrupt reason for workflow/runtime callers."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "interrupt_agent".to_string(),
-        description: "Interrupt an agent's current turn, if any, and return its previous status. The agent remains available for messages and follow-up tasks.".to_string(),
+        description: "Interrupt an agent's current turn, if any, and return its previous status. The agent remains available for messages and follow-up tasks. Workflow runtime callers may pass a reason such as user-skip, user-retry, or stalled.".to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
@@ -496,6 +505,51 @@ fn wait_output_schema_v2() -> Value {
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+            },
+            "messages": {
+                "type": "array",
+                "description": "Pending mailbox messages, present only when include_messages is true. This can include child final content.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "author": { "type": "string" },
+                        "recipient": { "type": "string" },
+                        "content": { "type": "string" },
+                        "status": {
+                            "description": "Parsed subagent lifecycle status when the message is a subagent notification."
+                        },
+                        "final_message": {
+                            "type": "string",
+                            "description": "Parsed final assistant message for completed subagents, when available."
+                        },
+                        "tool_calls": {
+                            "type": "array",
+                            "description": "Bounded tool calls observed in the child agent's latest turn, when include_messages is true.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "input": {},
+                                    "output": { "type": "string" }
+                                },
+                                "required": ["name", "input"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "reasoning": {
+                            "type": "array",
+                            "description": "Bounded reasoning summary text observed in the child agent's latest turn.",
+                            "items": { "type": "string" }
+                        },
+                        "transcript": {
+                            "type": "array",
+                            "description": "Newest bounded Claude-shaped child transcript records from the child agent's response history, preserving message bodies, reasoning summaries, tool_use records, and linked tool_result records.",
+                            "items": { "type": "object" }
+                        }
+                    },
+                    "required": ["author", "recipient", "content"],
+                    "additionalProperties": false
+                }
             }
         },
         "required": ["message", "timed_out"],
@@ -510,6 +564,10 @@ fn agent_previous_status_output_schema(previous_status_description: &str) -> Val
             "previous_status": {
                 "description": previous_status_description,
                 "allOf": [agent_status_output_schema()]
+            },
+            "reason": {
+                "type": ["string", "null"],
+                "description": "Machine-readable interrupt reason when supplied by the caller."
             }
         },
         "required": ["previous_status"],
@@ -633,6 +691,17 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             JsonSchema::string(Some(
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
+        ),
+        (
+            "isolation".to_string(),
+            JsonSchema::string(Some(
+                "Workflow compatibility field. `worktree` runs the agent in an isolated local git worktree; `remote` is recognized but currently rejected by this Codex build."
+                    .to_string(),
+            )),
+        ),
+        (
+            "schema".to_string(),
+            JsonSchema::object(BTreeMap::new(), None, Some(true.into())),
         ),
     ])
 }
@@ -841,13 +910,22 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+        (
+            "include_messages".to_string(),
+            JsonSchema::boolean(Some(
+                "Opt in to returning pending mailbox messages, including subagent final content when available. Defaults to false."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

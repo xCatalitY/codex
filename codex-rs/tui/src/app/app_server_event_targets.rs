@@ -88,6 +88,7 @@ pub(super) fn server_notification_thread_target(
             Some(notification.thread_id.as_str())
         }
         ServerNotification::PlanDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::WorkflowProgress(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::CommandExecutionOutputDelta(notification) => {
             Some(notification.thread_id.as_str())
         }
@@ -224,6 +225,7 @@ mod tests {
                     model: "gpt-5.4".to_string(),
                     reasoning_effort: Some(ReasoningEffort::High),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             },
             personality: None,

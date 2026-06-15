@@ -738,6 +738,9 @@ fn event_label(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
         HookEventName::SubagentStart => "SubagentStart",
         HookEventName::SubagentStop => "SubagentStop",
+        HookEventName::TaskCreated => "TaskCreated",
+        HookEventName::TaskCompleted => "TaskCompleted",
+        HookEventName::Notification => "Notification",
         HookEventName::Stop => "Stop",
     }
 }
@@ -753,6 +756,9 @@ fn event_description(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "When the user submits a prompt",
         HookEventName::SubagentStart => "When a subagent is created",
         HookEventName::SubagentStop => "Right before a subagent ends its turn",
+        HookEventName::TaskCreated => "When a workflow task starts",
+        HookEventName::TaskCompleted => "When a workflow task reaches a terminal state",
+        HookEventName::Notification => "When a workflow emits a notification",
         HookEventName::Stop => "Right before Codex ends its turn",
     }
 }

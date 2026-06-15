@@ -87,6 +87,7 @@ async fn handle_interrupt_agent(
 
     Ok(InterruptAgentResult {
         previous_status: status,
+        reason: args.reason,
     })
 }
 
@@ -100,11 +101,15 @@ impl CoreToolRuntime for Handler {
 #[serde(deny_unknown_fields)]
 struct InterruptAgentArgs {
     target: String,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct InterruptAgentResult {
     pub(crate) previous_status: AgentStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
 }
 
 impl ToolOutput for InterruptAgentResult {

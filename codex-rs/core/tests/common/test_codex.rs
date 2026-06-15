@@ -872,6 +872,7 @@ impl TestCodex {
                             model: session_model,
                             reasoning_effort: None,
                             developer_instructions: None,
+                            workflow_mode: None,
                         },
                     }),
                     ..Default::default()

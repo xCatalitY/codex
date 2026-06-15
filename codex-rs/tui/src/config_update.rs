@@ -16,9 +16,11 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_config::loader::project_trust_key;
+use codex_config::types::WorkflowApproval;
 use codex_features::FEATURES;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::config_types::WorkflowMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -42,6 +44,11 @@ pub(crate) fn clear_config_value(key_path: impl Into<String>) -> ConfigEdit {
 pub(crate) fn app_scoped_key_path(app_id: &str, key_path: &str) -> String {
     let app_id = serde_json::Value::String(app_id.to_string()).to_string();
     format!("apps.{app_id}.{key_path}")
+}
+
+fn quoted_key_path_segment(segment: &str) -> String {
+    let escaped = segment.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 pub(crate) fn format_config_error(err: &impl Display) -> String {
@@ -138,6 +145,77 @@ pub(crate) fn build_memory_settings_edits(
             serde_json::json!(generate_memories),
         ),
     ]
+}
+
+pub(crate) fn build_workflow_settings_edits(
+    enabled: bool,
+    mode: WorkflowMode,
+    approval: WorkflowApproval,
+    keyword_trigger_enabled: bool,
+) -> Vec<ConfigEdit> {
+    vec![
+        replace_config_value("workflows.enabled", serde_json::json!(enabled)),
+        replace_config_value(
+            "workflows.mode",
+            serde_json::json!(workflow_mode_config_value(mode)),
+        ),
+        replace_config_value(
+            "workflows.approval",
+            serde_json::json!(workflow_approval_config_value(approval)),
+        ),
+        replace_config_value(
+            "workflows.keyword_trigger_enabled",
+            serde_json::json!(keyword_trigger_enabled),
+        ),
+    ]
+}
+
+pub(crate) fn build_named_workflow_approval_edit(
+    workflow_name: &str,
+    approval: Option<WorkflowApproval>,
+) -> ConfigEdit {
+    let key_path = format!(
+        "workflows.named.{}.approval",
+        quoted_key_path_segment(workflow_name)
+    );
+    match approval {
+        Some(approval) => replace_config_value(
+            key_path,
+            serde_json::json!(workflow_approval_config_value(approval)),
+        ),
+        None => clear_config_value(key_path),
+    }
+}
+
+pub(crate) fn build_named_workflow_enabled_edit(
+    workflow_name: &str,
+    enabled: Option<bool>,
+) -> ConfigEdit {
+    let key_path = format!(
+        "workflows.named.{}.enabled",
+        quoted_key_path_segment(workflow_name)
+    );
+    match enabled {
+        Some(enabled) => replace_config_value(key_path, serde_json::json!(enabled)),
+        None => clear_config_value(key_path),
+    }
+}
+
+fn workflow_mode_config_value(mode: WorkflowMode) -> &'static str {
+    match mode {
+        WorkflowMode::Disabled => "disabled",
+        WorkflowMode::Dynamic => "dynamic",
+        WorkflowMode::Ultracode => "ultracode",
+    }
+}
+
+fn workflow_approval_config_value(approval: WorkflowApproval) -> &'static str {
+    match approval {
+        WorkflowApproval::Auto => "auto",
+        WorkflowApproval::Ask => "ask",
+        WorkflowApproval::Allow => "allow",
+        WorkflowApproval::Deny => "deny",
+    }
 }
 
 pub(crate) fn build_oss_provider_edit(provider: &str) -> ConfigEdit {

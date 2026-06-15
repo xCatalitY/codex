@@ -12,7 +12,8 @@ use super::selection_popup_common::render_rows_with_col_width_mode;
 use super::slash_commands::BuiltinCommandFlags;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
-use super::slash_commands::commands_for_input;
+use super::slash_commands::WorkflowSlashCommand;
+use super::slash_commands::commands_for_input_with_workflows;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::slash_command::SlashCommand;
@@ -31,6 +32,7 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
 pub(crate) enum CommandItem {
     Builtin(SlashCommand),
     ServiceTier(ServiceTierCommand),
+    Workflow(WorkflowSlashCommand),
 }
 
 pub(crate) struct CommandPopup {
@@ -71,20 +73,34 @@ impl From<CommandPopupFlags> for BuiltinCommandFlags {
 }
 
 impl CommandPopup {
+    #[cfg(test)]
     pub(crate) fn new(
         flags: CommandPopupFlags,
         service_tier_commands: Vec<ServiceTierCommand>,
     ) -> Self {
+        Self::new_with_workflows(flags, service_tier_commands, Vec::new())
+    }
+
+    pub(crate) fn new_with_workflows(
+        flags: CommandPopupFlags,
+        service_tier_commands: Vec<ServiceTierCommand>,
+        workflow_commands: Vec<WorkflowSlashCommand>,
+    ) -> Self {
         // Keep built-in availability in sync with the composer.
-        let commands = commands_for_input(flags.into(), &service_tier_commands)
-            .into_iter()
-            .filter_map(|command| match command {
-                SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
-                    && cmd != SlashCommand::Apps)
-                    .then_some(CommandItem::Builtin(cmd)),
-                SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
-            })
-            .collect();
+        let commands = commands_for_input_with_workflows(
+            flags.into(),
+            &service_tier_commands,
+            &workflow_commands,
+        )
+        .into_iter()
+        .filter_map(|command| match command {
+            SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
+                && cmd != SlashCommand::Apps)
+                .then_some(CommandItem::Builtin(cmd)),
+            SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
+            SlashCommandItem::Workflow(command) => Some(CommandItem::Workflow(command)),
+        })
+        .collect();
         Self {
             command_filter: String::new(),
             commands,
@@ -214,7 +230,7 @@ impl CommandPopup {
                     match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                     display_shortcut: None,
                     description: Some(description),
-                    category_tag: None,
+                    category_tag: item.category_tag(),
                     wrap_indent: None,
                     is_disabled: false,
                     disabled_reason: None,
@@ -252,6 +268,7 @@ impl CommandItem {
         match self {
             Self::Builtin(cmd) => cmd.command(),
             Self::ServiceTier(command) => &command.name,
+            Self::Workflow(command) => &command.name,
         }
     }
 
@@ -259,6 +276,14 @@ impl CommandItem {
         match self {
             Self::Builtin(cmd) => cmd.description(),
             Self::ServiceTier(command) => &command.description,
+            Self::Workflow(command) => &command.description,
+        }
+    }
+
+    fn category_tag(&self) -> Option<String> {
+        match self {
+            Self::Workflow(command) => command.source_label.clone(),
+            Self::Builtin(_) | Self::ServiceTier(_) => None,
         }
     }
 }
@@ -298,6 +323,7 @@ mod tests {
         let has_init = matches.iter().any(|item| match item {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
             CommandItem::ServiceTier(_) => false,
+            CommandItem::Workflow(_) => false,
         });
         assert!(
             has_init,
@@ -318,6 +344,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected init command, got service tier {command:?}")
             }
+            Some(CommandItem::Workflow(command)) => {
+                panic!("expected init command, got workflow {command:?}")
+            }
             None => panic!("expected a selected command for exact match"),
         }
     }
@@ -331,6 +360,9 @@ mod tests {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected model command, got service tier {command:?}")
+            }
+            Some(CommandItem::Workflow(command)) => {
+                panic!("expected model command, got workflow {command:?}")
             }
             None => panic!("expected at least one match for '/mo'"),
         }
@@ -370,6 +402,55 @@ mod tests {
     }
 
     #[test]
+    fn workflow_commands_show_source_category_tags() {
+        let mut popup = CommandPopup::new_with_workflows(
+            CommandPopupFlags::default(),
+            Vec::new(),
+            vec![
+                WorkflowSlashCommand {
+                    name: "release".to_string(),
+                    description: "Release workflow".to_string(),
+                    input_schema: None,
+                    source_label: Some("[Workflow]".to_string()),
+                },
+                WorkflowSlashCommand {
+                    name: "sample:release".to_string(),
+                    description: "Plugin release workflow".to_string(),
+                    input_schema: None,
+                    source_label: Some("[Plugin Workflow]".to_string()),
+                },
+                WorkflowSlashCommand {
+                    name: "builtin".to_string(),
+                    description: "System workflow".to_string(),
+                    input_schema: None,
+                    source_label: Some("[System Workflow]".to_string()),
+                },
+            ],
+        );
+        popup.on_composer_text_change("/release".to_string());
+
+        let rows = popup.rows_from_matches(popup.filtered());
+        assert_eq!(
+            rows.first().and_then(|row| row.category_tag.as_deref()),
+            Some("[Workflow]")
+        );
+
+        popup.on_composer_text_change("/sample".to_string());
+        let rows = popup.rows_from_matches(popup.filtered());
+        assert_eq!(
+            rows.first().and_then(|row| row.category_tag.as_deref()),
+            Some("[Plugin Workflow]")
+        );
+
+        popup.on_composer_text_change("/builtin".to_string());
+        let rows = popup.rows_from_matches(popup.filtered());
+        assert_eq!(
+            rows.first().and_then(|row| row.category_tag.as_deref()),
+            Some("[System Workflow]")
+        );
+    }
+
+    #[test]
     fn filtered_commands_keep_presentation_order_for_prefix() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/m".to_string());
@@ -380,6 +461,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
         assert_eq!(
@@ -423,6 +505,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
         assert!(
@@ -498,6 +581,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
         assert!(
@@ -530,6 +614,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected plan command, got service tier {command:?}")
             }
+            Some(CommandItem::Workflow(command)) => {
+                panic!("expected plan command, got workflow {command:?}")
+            }
             other => panic!("expected plan to be selected for exact match, got {other:?}"),
         }
     }
@@ -559,6 +646,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
         assert!(
@@ -591,6 +679,9 @@ mod tests {
             Some(CommandItem::ServiceTier(command)) => {
                 panic!("expected personality command, got service tier {command:?}")
             }
+            Some(CommandItem::Workflow(command)) => {
+                panic!("expected personality command, got workflow {command:?}")
+            }
             other => panic!("expected personality to be selected for exact match, got {other:?}"),
         }
     }
@@ -620,6 +711,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
 
@@ -638,6 +730,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Workflow(command) => command.name,
             })
             .collect();
 

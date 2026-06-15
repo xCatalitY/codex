@@ -27,6 +27,7 @@ use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
+use crate::types::WorkflowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
@@ -419,6 +420,9 @@ pub struct ConfigToml {
 
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,
+
+    /// JavaScript workflow runtime settings.
+    pub workflows: Option<WorkflowsToml>,
 
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,

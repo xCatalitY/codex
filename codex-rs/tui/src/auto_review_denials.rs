@@ -71,6 +71,27 @@ pub(crate) fn action_summary(action: &GuardianAssessmentAction) -> String {
             .as_deref()
             .map(|reason| format!("permission request: {reason}"))
             .unwrap_or_else(|| "permission request".to_string()),
+        GuardianAssessmentAction::Workflow {
+            workflow_name,
+            source_kind,
+            source_name,
+            metadata_name,
+        } => {
+            let name = [metadata_name, workflow_name, source_name]
+                .into_iter()
+                .map(|value| value.trim())
+                .find(|value| !value.is_empty())
+                .unwrap_or("workflow");
+            match (source_kind.trim(), source_name.trim()) {
+                ("", _) | (_, "") => format!("workflow {name}"),
+                (source_kind, source_name) if source_name == name => {
+                    format!("workflow {name} ({source_kind})")
+                }
+                (source_kind, source_name) => {
+                    format!("workflow {name} ({source_kind}: {source_name})")
+                }
+            }
+        }
     }
 }
 

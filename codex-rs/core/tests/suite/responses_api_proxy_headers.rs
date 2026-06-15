@@ -165,6 +165,7 @@ async fn submit_turn_with_timeout(test: &TestCodex, prompt: &str) -> Result<()> 
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

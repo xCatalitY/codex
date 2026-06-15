@@ -252,6 +252,9 @@ pub enum GuardianReviewedAction {
         tool_title: Option<String>,
     },
     RequestPermissions {},
+    Workflow {
+        source_kind: String,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -513,6 +516,7 @@ pub(crate) enum ReviewSubjectKind {
     McpToolCall,
     Permissions,
     NetworkAccess,
+    Workflow,
 }
 
 #[allow(dead_code)]
@@ -1084,6 +1088,9 @@ fn analytics_hook_event_name(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
         HookEventName::SubagentStart => "SubagentStart",
         HookEventName::SubagentStop => "SubagentStop",
+        HookEventName::TaskCreated => "TaskCreated",
+        HookEventName::TaskCompleted => "TaskCompleted",
+        HookEventName::Notification => "Notification",
         HookEventName::Stop => "Stop",
     }
 }

@@ -258,6 +258,10 @@ impl AgentControl {
             }
             other => (other, AgentMetadata::default()),
         };
+        agent_metadata.workflow_worktree = options.workflow_worktree.clone();
+        agent_metadata.workflow_transcript_path = options.workflow_transcript_path.clone();
+        agent_metadata.workflow_transcript_mirror_path =
+            options.workflow_transcript_mirror_path.clone();
         let notification_source = session_source.clone();
 
         // The same `AgentControl` is sent to spawn the thread.

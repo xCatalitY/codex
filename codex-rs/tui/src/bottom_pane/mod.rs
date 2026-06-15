@@ -104,6 +104,8 @@ pub(crate) mod prompt_args;
 mod skill_popup;
 mod skills_toggle_view;
 pub(crate) mod slash_commands;
+mod workflow_settings_model;
+mod workflow_settings_view;
 pub(crate) use footer::CollaborationModeIndicator;
 pub(crate) use footer::GoalStatusIndicator;
 #[cfg(test)]
@@ -119,6 +121,9 @@ pub(crate) use list_selection_view::popup_content_width;
 pub(crate) use list_selection_view::side_by_side_layout_widths;
 pub(crate) use memories_settings_view::MemoriesSettingsView;
 use slash_commands::ServiceTierCommand;
+use slash_commands::WorkflowSlashCommand;
+pub(crate) use workflow_settings_model::WorkflowNamedPolicyItem;
+pub(crate) use workflow_settings_view::WorkflowSettingsView;
 mod feedback_view;
 mod hooks_browser_view;
 pub(crate) use feedback_view::FeedbackAudience;
@@ -419,6 +424,11 @@ impl BottomPane {
 
     pub fn set_service_tier_commands(&mut self, commands: Vec<ServiceTierCommand>) {
         self.composer.set_service_tier_commands(commands);
+        self.request_redraw();
+    }
+
+    pub fn set_workflow_slash_commands(&mut self, commands: Vec<WorkflowSlashCommand>) {
+        self.composer.set_workflow_slash_commands(commands);
         self.request_redraw();
     }
 
@@ -879,9 +889,20 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_workflow_keyword_nudge_visible(&mut self, visible: bool) {
+        if self.composer.set_workflow_keyword_nudge_visible(visible) {
+            self.request_redraw();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn plan_mode_nudge_visible(&self) -> bool {
         self.composer.plan_mode_nudge_visible()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn workflow_keyword_nudge_visible(&self) -> bool {
+        self.composer.workflow_keyword_nudge_visible()
     }
 
     pub(crate) fn set_remote_image_urls(&mut self, urls: Vec<String>) {

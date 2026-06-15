@@ -79,4 +79,6 @@ export type { WebSearchContextSize } from "./WebSearchContextSize";
 export type { WebSearchLocation } from "./WebSearchLocation";
 export type { WebSearchMode } from "./WebSearchMode";
 export type { WebSearchToolConfig } from "./WebSearchToolConfig";
+export type { WorkflowAgentControlAction } from "./WorkflowAgentControlAction";
+export type { WorkflowMode } from "./WorkflowMode";
 export * as v2 from "./v2";

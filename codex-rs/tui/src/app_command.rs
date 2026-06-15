@@ -19,6 +19,7 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::WorkflowAgentControlAction;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use serde::Serialize;
 use serde_json::Value;
@@ -30,6 +31,27 @@ pub(crate) enum AppCommand {
         behavior: InterruptBehavior,
     },
     CleanBackgroundTerminals,
+    WorkflowCancel {
+        run_id: String,
+        cell_id: String,
+    },
+    WorkflowPause {
+        run_id: String,
+        cell_id: String,
+    },
+    WorkflowContinue {
+        run_id: String,
+        cell_id: String,
+    },
+    WorkflowAgentInterrupt {
+        run_id: String,
+        agent_id: String,
+    },
+    WorkflowAgentControl {
+        run_id: String,
+        agent_id: String,
+        action: WorkflowAgentControlAction,
+    },
     RealtimeConversationStart {
         transport: Option<ThreadRealtimeStartTransport>,
         voice: Option<Value>,
@@ -133,6 +155,34 @@ impl AppCommand {
 
     pub(crate) fn clean_background_terminals() -> Self {
         Self::CleanBackgroundTerminals
+    }
+
+    pub(crate) fn workflow_cancel(run_id: String, cell_id: String) -> Self {
+        Self::WorkflowCancel { run_id, cell_id }
+    }
+
+    pub(crate) fn workflow_pause(run_id: String, cell_id: String) -> Self {
+        Self::WorkflowPause { run_id, cell_id }
+    }
+
+    pub(crate) fn workflow_continue(run_id: String, cell_id: String) -> Self {
+        Self::WorkflowContinue { run_id, cell_id }
+    }
+
+    pub(crate) fn workflow_agent_interrupt(run_id: String, agent_id: String) -> Self {
+        Self::WorkflowAgentInterrupt { run_id, agent_id }
+    }
+
+    pub(crate) fn workflow_agent_control(
+        run_id: String,
+        agent_id: String,
+        action: WorkflowAgentControlAction,
+    ) -> Self {
+        Self::WorkflowAgentControl {
+            run_id,
+            agent_id,
+            action,
+        }
     }
 
     pub(crate) fn realtime_conversation_start(

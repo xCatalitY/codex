@@ -49,6 +49,12 @@ pub struct HookEventsToml {
     pub subagent_start: Vec<MatcherGroup>,
     #[serde(rename = "SubagentStop", default)]
     pub subagent_stop: Vec<MatcherGroup>,
+    #[serde(rename = "TaskCreated", default)]
+    pub task_created: Vec<MatcherGroup>,
+    #[serde(rename = "TaskCompleted", default)]
+    pub task_completed: Vec<MatcherGroup>,
+    #[serde(rename = "Notification", default)]
+    pub notification: Vec<MatcherGroup>,
     #[serde(rename = "Stop", default)]
     pub stop: Vec<MatcherGroup>,
 }
@@ -65,6 +71,9 @@ impl HookEventsToml {
             user_prompt_submit,
             subagent_start,
             subagent_stop,
+            task_created,
+            task_completed,
+            notification,
             stop,
         } = self;
         pre_tool_use.is_empty()
@@ -76,6 +85,9 @@ impl HookEventsToml {
             && user_prompt_submit.is_empty()
             && subagent_start.is_empty()
             && subagent_stop.is_empty()
+            && task_created.is_empty()
+            && task_completed.is_empty()
+            && notification.is_empty()
             && stop.is_empty()
     }
 
@@ -90,6 +102,9 @@ impl HookEventsToml {
             user_prompt_submit,
             subagent_start,
             subagent_stop,
+            task_created,
+            task_completed,
+            notification,
             stop,
         } = self;
         [
@@ -102,6 +117,9 @@ impl HookEventsToml {
             user_prompt_submit,
             subagent_start,
             subagent_stop,
+            task_created,
+            task_completed,
+            notification,
             stop,
         ]
         .into_iter()
@@ -110,7 +128,7 @@ impl HookEventsToml {
         .sum()
     }
 
-    pub fn into_matcher_groups(self) -> [(HookEventName, Vec<MatcherGroup>); 10] {
+    pub fn into_matcher_groups(self) -> [(HookEventName, Vec<MatcherGroup>); 13] {
         [
             (HookEventName::PreToolUse, self.pre_tool_use),
             (HookEventName::PermissionRequest, self.permission_request),
@@ -121,6 +139,9 @@ impl HookEventsToml {
             (HookEventName::UserPromptSubmit, self.user_prompt_submit),
             (HookEventName::SubagentStart, self.subagent_start),
             (HookEventName::SubagentStop, self.subagent_stop),
+            (HookEventName::TaskCreated, self.task_created),
+            (HookEventName::TaskCompleted, self.task_completed),
+            (HookEventName::Notification, self.notification),
             (HookEventName::Stop, self.stop),
         ]
     }

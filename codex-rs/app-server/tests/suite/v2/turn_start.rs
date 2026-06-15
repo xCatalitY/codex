@@ -1017,6 +1017,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
                     model: "mock-model".to_string(),
                     reasoning_effort: Some(ReasoningEffort::Medium),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()
@@ -1539,6 +1540,7 @@ async fn turn_start_accepts_collaboration_mode_override_v2() -> Result<()> {
             model: "mock-model-collab".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
 
@@ -1629,6 +1631,7 @@ async fn turn_start_uses_thread_feature_overrides_for_request_user_input_tool_de
             model: "mock-model-collab".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
 

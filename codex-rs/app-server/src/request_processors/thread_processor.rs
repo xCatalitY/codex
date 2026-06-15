@@ -664,6 +664,56 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_workflow_cancel(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowCancelParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_cancel_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_pause(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowPauseParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_pause_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_continue(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowContinueParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_continue_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_agent_interrupt(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowAgentInterruptParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_agent_interrupt_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_workflow_agent_control(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowAgentControlParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_agent_control_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_approve_guardian_denied_action(
         &self,
         request_id: &ConnectionRequestId,
@@ -1837,6 +1887,161 @@ impl ThreadRequestProcessor {
         .await
         .map_err(|err| internal_error(format!("failed to start shell command: {err}")))?;
         Ok(ThreadShellCommandResponse {})
+    }
+
+    async fn thread_workflow_cancel_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowCancelParams,
+    ) -> Result<ThreadWorkflowCancelResponse, JSONRPCErrorError> {
+        let ThreadWorkflowCancelParams {
+            thread_id,
+            run_id,
+            cell_id,
+        } = params;
+        let run_id = run_id.trim().to_string();
+        let cell_id = cell_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err(invalid_request("runId must not be empty"));
+        }
+        if cell_id.is_empty() {
+            return Err(invalid_request("cellId must not be empty"));
+        }
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::WorkflowCancel { run_id, cell_id },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to cancel workflow: {err}")))?;
+        Ok(ThreadWorkflowCancelResponse {})
+    }
+
+    async fn thread_workflow_pause_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowPauseParams,
+    ) -> Result<ThreadWorkflowPauseResponse, JSONRPCErrorError> {
+        let ThreadWorkflowPauseParams {
+            thread_id,
+            run_id,
+            cell_id,
+        } = params;
+        let run_id = run_id.trim().to_string();
+        let cell_id = cell_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err(invalid_request("runId must not be empty"));
+        }
+        if cell_id.is_empty() {
+            return Err(invalid_request("cellId must not be empty"));
+        }
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::WorkflowPause { run_id, cell_id },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to pause workflow: {err}")))?;
+        Ok(ThreadWorkflowPauseResponse {})
+    }
+
+    async fn thread_workflow_continue_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowContinueParams,
+    ) -> Result<ThreadWorkflowContinueResponse, JSONRPCErrorError> {
+        let ThreadWorkflowContinueParams {
+            thread_id,
+            run_id,
+            cell_id,
+        } = params;
+        let run_id = run_id.trim().to_string();
+        let cell_id = cell_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err(invalid_request("runId must not be empty"));
+        }
+        if cell_id.is_empty() {
+            return Err(invalid_request("cellId must not be empty"));
+        }
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::WorkflowContinue { run_id, cell_id },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to continue workflow: {err}")))?;
+        Ok(ThreadWorkflowContinueResponse {})
+    }
+
+    async fn thread_workflow_agent_interrupt_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowAgentInterruptParams,
+    ) -> Result<ThreadWorkflowAgentInterruptResponse, JSONRPCErrorError> {
+        let ThreadWorkflowAgentInterruptParams {
+            thread_id,
+            run_id,
+            agent_id,
+        } = params;
+        let run_id = run_id.trim().to_string();
+        let agent_id = agent_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err(invalid_request("runId must not be empty"));
+        }
+        if agent_id.is_empty() {
+            return Err(invalid_request("agentId must not be empty"));
+        }
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::WorkflowAgentInterrupt { run_id, agent_id },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to interrupt workflow agent: {err}")))?;
+        Ok(ThreadWorkflowAgentInterruptResponse {})
+    }
+
+    async fn thread_workflow_agent_control_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadWorkflowAgentControlParams,
+    ) -> Result<ThreadWorkflowAgentControlResponse, JSONRPCErrorError> {
+        let ThreadWorkflowAgentControlParams {
+            thread_id,
+            run_id,
+            agent_id,
+            action,
+        } = params;
+        let run_id = run_id.trim().to_string();
+        let agent_id = agent_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err(invalid_request("runId must not be empty"));
+        }
+        if agent_id.is_empty() {
+            return Err(invalid_request("agentId must not be empty"));
+        }
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::WorkflowAgentControl {
+                run_id,
+                agent_id,
+                action,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to control workflow agent: {err}")))?;
+        Ok(ThreadWorkflowAgentControlResponse {})
     }
 
     async fn thread_approve_guardian_denied_action_inner(

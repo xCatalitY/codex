@@ -16,7 +16,7 @@ pub use declarations::plugin_hook_declarations;
 pub use engine::HookListEntry;
 pub use events::common::SubagentHookContext;
 /// Hook event names as they appear in hooks JSON and config files.
-pub const HOOK_EVENT_NAMES: [&str; 10] = [
+pub const HOOK_EVENT_NAMES: [&str; 13] = [
     "PreToolUse",
     "PermissionRequest",
     "PostToolUse",
@@ -26,6 +26,9 @@ pub const HOOK_EVENT_NAMES: [&str; 10] = [
     "UserPromptSubmit",
     "SubagentStart",
     "SubagentStop",
+    "TaskCreated",
+    "TaskCompleted",
+    "Notification",
     "Stop",
 ];
 
@@ -34,7 +37,7 @@ pub const HOOK_EVENT_NAMES: [&str; 10] = [
 /// Other events can appear in hooks JSON, but Codex ignores their matcher
 /// fields because those events do not dispatch against a tool, compaction
 /// trigger, or session-start source.
-pub const HOOK_EVENT_NAMES_WITH_MATCHERS: [&str; 8] = [
+pub const HOOK_EVENT_NAMES_WITH_MATCHERS: [&str; 11] = [
     "PreToolUse",
     "PermissionRequest",
     "PostToolUse",
@@ -43,6 +46,9 @@ pub const HOOK_EVENT_NAMES_WITH_MATCHERS: [&str; 8] = [
     "SessionStart",
     "SubagentStart",
     "SubagentStop",
+    "TaskCreated",
+    "TaskCompleted",
+    "Notification",
 ];
 
 pub use events::compact::PostCompactRequest;
@@ -65,6 +71,10 @@ pub use events::stop::StopOutcome;
 pub use events::stop::StopRequest;
 pub use events::user_prompt_submit::UserPromptSubmitOutcome;
 pub use events::user_prompt_submit::UserPromptSubmitRequest;
+pub use events::workflow::NotificationRequest;
+pub use events::workflow::TaskCompletedRequest;
+pub use events::workflow::TaskCreatedRequest;
+pub use events::workflow::WorkflowHookOutcome;
 pub use legacy_notify::legacy_notify_json;
 pub use legacy_notify::notify_hook;
 pub use registry::HookListOutcome;
@@ -92,6 +102,9 @@ pub fn hook_event_key_label(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "user_prompt_submit",
         HookEventName::SubagentStart => "subagent_start",
         HookEventName::SubagentStop => "subagent_stop",
+        HookEventName::TaskCreated => "task_created",
+        HookEventName::TaskCompleted => "task_completed",
+        HookEventName::Notification => "notification",
         HookEventName::Stop => "stop",
     }
 }

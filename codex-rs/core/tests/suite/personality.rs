@@ -81,6 +81,7 @@ fn read_only_text_turn_with_personality(
                     model,
                     reasoning_effort: test.config.model_reasoning_effort.clone(),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

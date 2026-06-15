@@ -5,6 +5,7 @@ use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginSharePrincipalRole;
 use codex_app_server_protocol::PluginShareTargetRole;
+use codex_app_server_protocol::PluginWorkflowDirectorySummary;
 use codex_config::types::McpServerConfig;
 use codex_core_plugins::OPENAI_CURATED_MARKETPLACE_NAME;
 use codex_core_plugins::PluginListBackgroundTaskOptions;
@@ -19,6 +20,7 @@ use codex_core_plugins::remote::validate_remote_plugin_id;
 use codex_mcp::McpOAuthLoginSupport;
 use codex_mcp::oauth_login_support;
 use codex_mcp::should_retry_without_scopes;
+use codex_plugin::PluginId;
 use codex_rmcp_client::perform_oauth_login_silent;
 
 #[derive(Clone)]
@@ -150,6 +152,39 @@ fn convert_configured_marketplace_plugin_to_plugin_summary(
         interface: plugin.interface.map(local_plugin_interface_to_info),
         keywords: plugin.keywords,
     }
+}
+
+fn plugin_workflow_directories_from_outcome(
+    outcome: &codex_core_plugins::PluginLoadOutcome,
+) -> Vec<PluginWorkflowDirectorySummary> {
+    let mut dirs = outcome
+        .plugins()
+        .iter()
+        .filter(|plugin| plugin.is_active())
+        .filter_map(|plugin| {
+            let plugin_id = PluginId::parse(&plugin.config_name).ok()?;
+            let path = plugin.root.join("workflows");
+            path.as_path()
+                .is_dir()
+                .then(|| PluginWorkflowDirectorySummary {
+                    plugin_id: plugin.config_name.clone(),
+                    namespace: plugin_id.plugin_name,
+                    path,
+                })
+        })
+        .collect::<Vec<_>>();
+    dirs.sort_unstable_by(|left, right| {
+        left.namespace
+            .cmp(&right.namespace)
+            .then(left.plugin_id.cmp(&right.plugin_id))
+            .then(left.path.as_path().cmp(right.path.as_path()))
+    });
+    dirs.dedup_by(|left, right| {
+        left.namespace == right.namespace
+            && left.plugin_id == right.plugin_id
+            && left.path.as_path() == right.path.as_path()
+    });
+    dirs
 }
 
 fn remote_installed_plugin_visible_marketplaces(config: &Config) -> Vec<&'static str> {
@@ -538,6 +573,7 @@ impl PluginRequestProcessor {
             marketplaces: Vec::new(),
             marketplace_load_errors: Vec::new(),
             featured_plugin_ids: Vec::new(),
+            workflow_directories: Vec::new(),
         };
         if !config.features.enabled(Feature::Plugins) {
             return Ok(empty_response());
@@ -550,6 +586,8 @@ impl PluginRequestProcessor {
             return Ok(empty_response());
         }
         let plugins_input = config.plugins_config_input();
+        let loaded_plugins = plugins_manager.plugins_for_config(&plugins_input).await;
+        let workflow_directories = plugin_workflow_directories_from_outcome(&loaded_plugins);
         let include_shared_with_me =
             marketplace_kinds.contains(&PluginListMarketplaceKind::SharedWithMe);
         let include_global_remote =
@@ -748,6 +786,7 @@ impl PluginRequestProcessor {
             marketplaces: data,
             marketplace_load_errors,
             featured_plugin_ids,
+            workflow_directories,
         })
     }
 

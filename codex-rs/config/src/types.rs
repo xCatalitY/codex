@@ -20,6 +20,7 @@ pub use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 pub use codex_protocol::config_types::WebSearchMode;
+pub use codex_protocol::config_types::WorkflowMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -370,6 +371,61 @@ impl From<MemoriesToml> for MemoriesConfig {
             consolidation_model: toml.consolidation_model,
         }
     }
+}
+
+/// Settings for JavaScript workflow execution.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WorkflowsToml {
+    /// When `false`, hides the workflow tool even if a session enables workflow mode.
+    pub enabled: Option<bool>,
+    /// Initial workflow mode for new sessions.
+    pub mode: Option<WorkflowMode>,
+    /// Whether the `ultracode` prompt keyword can enable one-turn workflow mode.
+    pub keyword_trigger_enabled: Option<bool>,
+    /// Default workflow approval behavior.
+    #[serde(default, alias = "approval_mode")]
+    pub approval: Option<WorkflowApproval>,
+    /// Per-named-workflow approval overrides keyed by workflow invocation name.
+    #[serde(default)]
+    pub named: Option<HashMap<String, WorkflowDefinitionConfig>>,
+    /// Additional directories searched by `workflow({ name: ... })` and `/workflow`.
+    #[serde(default, alias = "dirs", alias = "directories")]
+    pub workflow_dirs: Option<Vec<AbsolutePathBuf>>,
+    /// Initial wait before a long-running workflow yields a run id.
+    #[schemars(range(min = 0))]
+    pub yield_time_ms: Option<u64>,
+    /// Token budget for direct workflow output.
+    #[schemars(range(min = 1))]
+    pub max_output_tokens: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowApproval {
+    #[default]
+    Auto,
+    #[serde(alias = "prompt")]
+    Ask,
+    #[serde(alias = "approve")]
+    Allow,
+    #[serde(alias = "block", alias = "never")]
+    Deny,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WorkflowDefinitionConfig {
+    /// When `false`, blocks this named workflow before its script is evaluated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Approval behavior for this named workflow.
+    #[serde(
+        default,
+        alias = "approval_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub approval: Option<WorkflowApproval>,
 }
 
 /// Default settings that apply to all apps.

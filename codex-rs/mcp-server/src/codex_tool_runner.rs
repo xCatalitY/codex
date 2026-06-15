@@ -249,7 +249,7 @@ async fn run_codex_tool_session_inner(
                         .await;
                         continue;
                     }
-                    EventMsg::PlanDelta(_) => {
+                    EventMsg::PlanDelta(_) | EventMsg::WorkflowProgress(_) => {
                         continue;
                     }
                     EventMsg::Error(err_event) => {

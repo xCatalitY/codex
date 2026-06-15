@@ -3,6 +3,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use crate::model::CodeCellRuntimeStatus;
+use crate::model::CodeCellWorkflowProgress;
 use crate::model::ConversationItemKind;
 use crate::model::ExecutionStatus;
 use crate::model::ProducerRef;
@@ -59,6 +60,29 @@ fn code_cell_lifecycle_links_nested_tools_waits_and_outputs() -> anyhow::Result<
             runtime_cell_id: "1".to_string(),
             model_visible_call_id: "call-code".to_string(),
             source_js: "text('hi')".to_string(),
+        },
+    )?;
+    writer.append_with_context(
+        trace_context("turn-1"),
+        RawTraceEventPayload::CodeCellWorkflowProgress {
+            runtime_cell_id: "1".to_string(),
+            progress: CodeCellWorkflowProgress {
+                run_id: "wf-trace".to_string(),
+                event: "phase".to_string(),
+                unix_ms: 1235,
+                workflow: Some("release".to_string()),
+                phase: Some("build".to_string()),
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: Some(1),
+                step_index: None,
+                error: None,
+                message: Some("building".to_string()),
+            },
         },
     )?;
     writer.append(RawTraceEventPayload::InferenceCompleted {
@@ -174,6 +198,26 @@ fn code_cell_lifecycle_links_nested_tools_waits_and_outputs() -> anyhow::Result<
     assert_eq!(cell.runtime_cell_id, Some("1".to_string()));
     assert_eq!(cell.nested_tool_call_ids, vec!["nested-tool-1"]);
     assert_eq!(cell.wait_tool_call_ids, vec!["wait-tool-1"]);
+    assert_eq!(
+        cell.workflow_progress,
+        vec![CodeCellWorkflowProgress {
+            run_id: "wf-trace".to_string(),
+            event: "phase".to_string(),
+            unix_ms: 1235,
+            workflow: Some("release".to_string()),
+            phase: Some("build".to_string()),
+            agent: None,
+            agent_id: None,
+            child: None,
+            child_index: None,
+            child_run_id: None,
+            item_index: None,
+            stage_index: Some(1),
+            step_index: None,
+            error: None,
+            message: Some("building".to_string()),
+        }]
+    );
     assert_eq!(cell.output_item_ids, vec![output_item_id.clone()]);
     assert_eq!(
         rollout.conversation_items[output_item_id].produced_by,

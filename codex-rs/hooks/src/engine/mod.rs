@@ -20,6 +20,10 @@ use crate::events::stop::StopOutcome;
 use crate::events::stop::StopRequest;
 use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
+use crate::events::workflow::NotificationRequest;
+use crate::events::workflow::TaskCompletedRequest;
+use crate::events::workflow::TaskCreatedRequest;
+use crate::events::workflow::WorkflowHookOutcome;
 use crate::output_spill::HookOutputSpiller;
 use codex_config::ConfigLayerStack;
 use codex_plugin::PluginHookSource;
@@ -72,6 +76,9 @@ impl ConfiguredHandler {
             codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
             codex_protocol::protocol::HookEventName::SubagentStart => "subagent-start",
             codex_protocol::protocol::HookEventName::SubagentStop => "subagent-stop",
+            codex_protocol::protocol::HookEventName::TaskCreated => "task-created",
+            codex_protocol::protocol::HookEventName::TaskCompleted => "task-completed",
+            codex_protocol::protocol::HookEventName::Notification => "notification",
             codex_protocol::protocol::HookEventName::Stop => "stop",
         }
     }
@@ -230,6 +237,45 @@ impl ClaudeHooksEngine {
         request: PostCompactRequest,
     ) -> StatelessHookOutcome {
         crate::events::compact::run_post(&self.handlers, &self.shell, request).await
+    }
+
+    pub(crate) fn preview_task_created(&self, request: &TaskCreatedRequest) -> Vec<HookRunSummary> {
+        crate::events::workflow::preview_task_created(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_task_created(
+        &self,
+        request: TaskCreatedRequest,
+    ) -> WorkflowHookOutcome {
+        crate::events::workflow::run_task_created(&self.handlers, &self.shell, request).await
+    }
+
+    pub(crate) fn preview_task_completed(
+        &self,
+        request: &TaskCompletedRequest,
+    ) -> Vec<HookRunSummary> {
+        crate::events::workflow::preview_task_completed(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_task_completed(
+        &self,
+        request: TaskCompletedRequest,
+    ) -> WorkflowHookOutcome {
+        crate::events::workflow::run_task_completed(&self.handlers, &self.shell, request).await
+    }
+
+    pub(crate) fn preview_notification(
+        &self,
+        request: &NotificationRequest,
+    ) -> Vec<HookRunSummary> {
+        crate::events::workflow::preview_notification(&self.handlers, request)
+    }
+
+    pub(crate) async fn run_notification(
+        &self,
+        request: NotificationRequest,
+    ) -> WorkflowHookOutcome {
+        crate::events::workflow::run_notification(&self.handlers, &self.shell, request).await
     }
 
     pub(crate) fn preview_user_prompt_submit(

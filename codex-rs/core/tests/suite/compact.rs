@@ -122,6 +122,7 @@ fn disabled_permission_user_turn(text: impl Into<String>, cwd: PathBuf, model: S
                     model,
                     reasoning_effort: None,
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

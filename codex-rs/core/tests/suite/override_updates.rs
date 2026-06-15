@@ -21,6 +21,7 @@ fn collab_mode_with_instructions(instructions: Option<&str>) -> CollaborationMod
             model: "gpt-5.4".to_string(),
             reasoning_effort: None,
             developer_instructions: instructions.map(str::to_string),
+            workflow_mode: None,
         },
     }
 }

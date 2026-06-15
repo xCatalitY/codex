@@ -516,6 +516,7 @@ async fn replay_thread_snapshot_restores_draft_and_queued_input() {
             model: None,
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: None,
         },
     );
     let expected_input_state = app
@@ -938,6 +939,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
             model: Some("gpt-restored".to_string()),
             reasoning_effort: Some(Some(ReasoningEffortConfig::High)),
             developer_instructions: None,
+            workflow_mode: None,
         });
     app.chat_widget
         .apply_external_edit("draft prompt".to_string());
@@ -959,6 +961,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
             model: Some("gpt-replacement".to_string()),
             reasoning_effort: Some(Some(ReasoningEffortConfig::Low)),
             developer_instructions: None,
+            workflow_mode: None,
         });
     while new_op_rx.try_recv().is_ok() {}
 
@@ -999,6 +1002,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_for_draft_submit() {
                         model: "gpt-restored".to_string(),
                         reasoning_effort: Some(ReasoningEffortConfig::High),
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 })
             );
@@ -1022,6 +1026,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
             model: Some("gpt-restored".to_string()),
             reasoning_effort: Some(Some(ReasoningEffortConfig::High)),
             developer_instructions: None,
+            workflow_mode: None,
         });
     let input_state = app
         .chat_widget
@@ -1040,6 +1045,7 @@ async fn replay_thread_snapshot_restores_collaboration_mode_without_input() {
             model: Some("gpt-replacement".to_string()),
             reasoning_effort: Some(Some(ReasoningEffortConfig::Low)),
             developer_instructions: None,
+            workflow_mode: None,
         });
 
     app.replay_thread_snapshot(
@@ -1655,6 +1661,219 @@ async fn update_memory_settings_persists_and_updates_widget_config() -> Result<(
     );
     app_server.shutdown().await?;
     Ok(())
+}
+
+fn app_test_runtime() -> Result<tokio::runtime::Runtime> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?)
+}
+
+#[test]
+fn update_workflow_settings_persists_and_updates_widget_config() -> Result<()> {
+    let runtime = app_test_runtime()?;
+    runtime.block_on(async {
+        let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+
+        Box::pin(app.update_workflow_settings(
+            &mut app_server,
+            /*enabled*/ true,
+            WorkflowMode::Ultracode,
+            WorkflowApproval::Ask,
+            /*keyword_trigger_enabled*/ false,
+        ))
+        .await;
+
+        assert!(app.config.workflows.enabled);
+        assert_eq!(WorkflowMode::Ultracode, app.config.workflows.mode);
+        assert_eq!(WorkflowApproval::Ask, app.config.workflows.approval);
+        assert!(!app.config.workflows.keyword_trigger_enabled);
+        assert!(app.chat_widget.config_ref().workflows.enabled);
+        assert_eq!(
+            WorkflowMode::Ultracode,
+            app.chat_widget.config_ref().workflows.mode
+        );
+        assert_eq!(
+            WorkflowApproval::Ask,
+            app.chat_widget.config_ref().workflows.approval
+        );
+        assert!(
+            !app.chat_widget
+                .config_ref()
+                .workflows
+                .keyword_trigger_enabled
+        );
+
+        let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+        let config_value = toml::from_str::<TomlValue>(&config)?;
+        let workflows = config_value
+            .as_table()
+            .and_then(|table| table.get("workflows"))
+            .and_then(TomlValue::as_table)
+            .expect("workflows table should exist");
+        assert_eq!(workflows.get("enabled"), Some(&TomlValue::Boolean(true)));
+        assert_eq!(
+            workflows.get("mode"),
+            Some(&TomlValue::String("ultracode".to_string()))
+        );
+        assert_eq!(
+            workflows.get("approval"),
+            Some(&TomlValue::String("ask".to_string()))
+        );
+        assert_eq!(
+            workflows.get("keyword_trigger_enabled"),
+            Some(&TomlValue::Boolean(false))
+        );
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn update_named_workflow_approval_persists_and_updates_widget_config() -> Result<()> {
+    let runtime = app_test_runtime()?;
+    runtime.block_on(async {
+        let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+
+        Box::pin(app.update_named_workflow_approval(
+            &mut app_server,
+            "sample:release".to_string(),
+            Some(WorkflowApproval::Allow),
+        ))
+        .await;
+
+        assert_eq!(
+            app.config
+                .workflows
+                .named
+                .get("sample:release")
+                .and_then(|config| config.approval),
+            Some(WorkflowApproval::Allow)
+        );
+        assert_eq!(
+            app.chat_widget
+                .config_ref()
+                .workflows
+                .named
+                .get("sample:release")
+                .and_then(|config| config.approval),
+            Some(WorkflowApproval::Allow)
+        );
+
+        let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+        let config_value = toml::from_str::<TomlValue>(&config)?;
+        let approval = config_value
+            .as_table()
+            .and_then(|table| table.get("workflows"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("named"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("sample:release"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("approval"));
+        assert_eq!(approval, Some(&TomlValue::String("allow".to_string())));
+
+        Box::pin(app.update_named_workflow_approval(
+            &mut app_server,
+            "sample:release".to_string(),
+            None,
+        ))
+        .await;
+
+        assert!(!app.config.workflows.named.contains_key("sample:release"));
+        assert!(
+            !app.chat_widget
+                .config_ref()
+                .workflows
+                .named
+                .contains_key("sample:release")
+        );
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn update_named_workflow_enabled_persists_and_updates_widget_config() -> Result<()> {
+    let runtime = app_test_runtime()?;
+    runtime.block_on(async {
+        let (mut app, _app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+
+        Box::pin(app.update_named_workflow_enabled(
+            &mut app_server,
+            "sample:release".to_string(),
+            Some(false),
+        ))
+        .await;
+
+        assert_eq!(
+            app.config
+                .workflows
+                .named
+                .get("sample:release")
+                .and_then(|config| config.enabled),
+            Some(false)
+        );
+        assert_eq!(
+            app.chat_widget
+                .config_ref()
+                .workflows
+                .named
+                .get("sample:release")
+                .and_then(|config| config.enabled),
+            Some(false)
+        );
+
+        let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+        let config_value = toml::from_str::<TomlValue>(&config)?;
+        let enabled = config_value
+            .as_table()
+            .and_then(|table| table.get("workflows"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("named"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("sample:release"))
+            .and_then(TomlValue::as_table)
+            .and_then(|table| table.get("enabled"));
+        assert_eq!(enabled, Some(&TomlValue::Boolean(false)));
+
+        Box::pin(app.update_named_workflow_enabled(
+            &mut app_server,
+            "sample:release".to_string(),
+            None,
+        ))
+        .await;
+
+        assert!(!app.config.workflows.named.contains_key("sample:release"));
+        assert!(
+            !app.chat_widget
+                .config_ref()
+                .workflows
+                .named
+                .contains_key("sample:release")
+        );
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
 }
 
 #[test]
@@ -5540,6 +5759,7 @@ async fn override_turn_context_sends_thread_settings_update() {
                 model: "gpt-5.4".to_string(),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
                 developer_instructions: None,
+                workflow_mode: None,
             },
         };
         let op = AppCommand::override_turn_context(
@@ -5684,6 +5904,7 @@ async fn thread_setting_update_params_sync_model_and_default_reasoning() {
             model: Some("gpt-plan".to_string()),
             reasoning_effort: Some(Some(ReasoningEffortConfig::Medium)),
             developer_instructions: None,
+            workflow_mode: None,
         });
     app.on_update_reasoning_effort(Some(ReasoningEffortConfig::High));
 
@@ -5716,6 +5937,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             model: "gpt-plan".to_string(),
             reasoning_effort: Some(ReasoningEffortConfig::High),
             developer_instructions: Some("draft a plan first".to_string()),
+            workflow_mode: None,
         },
     };
 

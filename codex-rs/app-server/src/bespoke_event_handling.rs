@@ -852,6 +852,7 @@ pub(crate) async fn apply_bespoke_event_handling(
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::AgentMessageContentDelta(_)
         | EventMsg::PlanDelta(_)
+        | EventMsg::WorkflowProgress(_)
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::AgentReasoningSectionBreak(_)) => {

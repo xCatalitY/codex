@@ -75,6 +75,7 @@ pub(crate) struct StatelessHookOutput {
 
 use crate::schema::BlockDecisionWire;
 use crate::schema::HookUniversalOutputWire;
+use crate::schema::NotificationCommandOutputWire;
 use crate::schema::PermissionRequestBehaviorWire;
 use crate::schema::PermissionRequestCommandOutputWire;
 use crate::schema::PermissionRequestDecisionWire;
@@ -88,6 +89,8 @@ use crate::schema::SessionStartCommandOutputWire;
 use crate::schema::StopCommandOutputWire;
 use crate::schema::SubagentStartCommandOutputWire;
 use crate::schema::SubagentStopCommandOutputWire;
+use crate::schema::TaskCompletedCommandOutputWire;
+use crate::schema::TaskCreatedCommandOutputWire;
 use crate::schema::UserPromptSubmitCommandOutputWire;
 
 pub(crate) fn parse_session_start(stdout: &str) -> Option<SessionStartOutput> {
@@ -256,6 +259,21 @@ pub(crate) fn parse_post_compact(stdout: &str) -> Option<StatelessHookOutput> {
     })
 }
 
+pub(crate) fn parse_task_created(stdout: &str) -> Option<StatelessHookOutput> {
+    let wire: TaskCreatedCommandOutputWire = parse_json(stdout)?;
+    Some(stateless_output(wire.universal))
+}
+
+pub(crate) fn parse_task_completed(stdout: &str) -> Option<StatelessHookOutput> {
+    let wire: TaskCompletedCommandOutputWire = parse_json(stdout)?;
+    Some(stateless_output(wire.universal))
+}
+
+pub(crate) fn parse_notification(stdout: &str) -> Option<StatelessHookOutput> {
+    let wire: NotificationCommandOutputWire = parse_json(stdout)?;
+    Some(stateless_output(wire.universal))
+}
+
 pub(crate) fn parse_user_prompt_submit(stdout: &str) -> Option<UserPromptSubmitOutput> {
     let wire: UserPromptSubmitCommandOutputWire = parse_json(stdout)?;
     let should_block = matches!(wire.decision, Some(BlockDecisionWire::Block));
@@ -321,6 +339,13 @@ fn stop_output(
         should_block: should_block && invalid_block_reason.is_none(),
         reason,
         invalid_block_reason,
+    }
+}
+
+fn stateless_output(universal: HookUniversalOutputWire) -> StatelessHookOutput {
+    StatelessHookOutput {
+        universal: UniversalOutput::from(universal),
+        invalid_reason: None,
     }
 }
 
@@ -518,7 +543,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
+    use super::parse_notification;
     use super::parse_permission_request;
+    use super::parse_task_created;
 
     #[test]
     fn permission_request_rejects_reserved_updated_input_field() {
@@ -587,5 +614,40 @@ mod tests {
             parsed.invalid_reason,
             Some("PermissionRequest hook returned unsupported interrupt:true".to_string())
         );
+    }
+
+    #[test]
+    fn workflow_stateless_outputs_parse_universal_fields() {
+        let task_created = parse_task_created(
+            &json!({
+                "continue": false,
+                "stopReason": "ignored by workflow hooks",
+                "systemMessage": "workflow warning"
+            })
+            .to_string(),
+        )
+        .expect("task created hook output should parse");
+
+        assert_eq!(task_created.universal.continue_processing, false);
+        assert_eq!(
+            task_created.universal.stop_reason,
+            Some("ignored by workflow hooks".to_string())
+        );
+        assert_eq!(
+            task_created.universal.system_message,
+            Some("workflow warning".to_string())
+        );
+        assert_eq!(task_created.invalid_reason, None);
+
+        let notification = parse_notification(
+            &json!({
+                "suppressOutput": true
+            })
+            .to_string(),
+        )
+        .expect("notification hook output should parse");
+
+        assert_eq!(notification.universal.suppress_output, true);
+        assert_eq!(notification.invalid_reason, None);
     }
 }

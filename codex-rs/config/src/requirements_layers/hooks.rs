@@ -213,6 +213,9 @@ fn append_hook_events(existing: &mut HookEventsToml, incoming: HookEventsToml) -
         user_prompt_submit,
         subagent_start,
         subagent_stop,
+        task_created,
+        task_completed,
+        notification,
         stop,
     } = incoming;
 
@@ -226,6 +229,9 @@ fn append_hook_events(existing: &mut HookEventsToml, incoming: HookEventsToml) -
     changed |= append_vec(&mut existing.user_prompt_submit, user_prompt_submit);
     changed |= append_vec(&mut existing.subagent_start, subagent_start);
     changed |= append_vec(&mut existing.subagent_stop, subagent_stop);
+    changed |= append_vec(&mut existing.task_created, task_created);
+    changed |= append_vec(&mut existing.task_completed, task_completed);
+    changed |= append_vec(&mut existing.notification, notification);
     changed |= append_vec(&mut existing.stop, stop);
     changed
 }

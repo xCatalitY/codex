@@ -140,6 +140,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -238,6 +239,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

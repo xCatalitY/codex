@@ -292,7 +292,19 @@ impl ChatWidget {
             }
         }
 
-        let effective_mode = self.effective_collaboration_mode();
+        let ultracode_keyword = self.config.workflows.keyword_trigger_enabled
+            && contains_ultracode_keyword(&text)
+            && !self.workflow_keyword_trigger_suppressed_for_text(&text);
+        let mut effective_mode = self.effective_collaboration_mode();
+        if ultracode_keyword {
+            effective_mode = effective_mode
+                .with_updates(
+                    /*model*/ None,
+                    Some(Some(ReasoningEffortConfig::XHigh)),
+                    /*developer_instructions*/ None,
+                )
+                .with_workflow_mode(WorkflowMode::Ultracode);
+        }
         if effective_mode.model().trim().is_empty() {
             self.add_error_message(
                 "Thread model is unavailable. Wait for the thread to finish syncing or choose a model before sending input.".to_string(),
@@ -313,9 +325,8 @@ impl ChatWidget {
         self.maybe_apply_ide_context(&mut items);
 
         let collaboration_mode = if self.collaboration_modes_enabled() {
-            self.active_collaboration_mask
-                .as_ref()
-                .map(|_| effective_mode.clone())
+            (ultracode_keyword || self.active_collaboration_mask.is_some())
+                .then_some(effective_mode.clone())
         } else {
             None
         };
@@ -354,6 +365,7 @@ impl ChatWidget {
         if !self.submit_op(op.clone()) {
             return (false, None);
         }
+        self.suppressed_workflow_keyword_nudge = None;
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
         }
@@ -448,5 +460,105 @@ impl ChatWidget {
             self.image_inputs_not_supported_message(),
         ));
         self.request_redraw();
+    }
+}
+
+pub(super) fn contains_ultracode_keyword(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('/') {
+        return false;
+    };
+
+    let mut quote = None;
+    let mut escaped = false;
+    let mut bracket_depth = 0usize;
+    for (index, ch) in text.char_indices() {
+        if let Some(quote_ch) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+
+        if bracket_depth > 0 {
+            match ch {
+                '[' | '(' | '{' => bracket_depth += 1,
+                ']' | ')' | '}' => bracket_depth = bracket_depth.saturating_sub(1),
+                '\'' | '"' | '`' => quote = Some(ch),
+                _ => {}
+            }
+            continue;
+        }
+
+        if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+            continue;
+        }
+        if matches!(ch, '[' | '(' | '{') {
+            bracket_depth += 1;
+            continue;
+        }
+        if ch.eq_ignore_ascii_case(&'u') && ultracode_keyword_at(text, index) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn ultracode_keyword_at(text: &str, start: usize) -> bool {
+    const KEYWORD: &str = "ultracode";
+    let end = start + KEYWORD.len();
+    let Some(candidate) = text.get(start..end) else {
+        return false;
+    };
+    if !candidate.eq_ignore_ascii_case(KEYWORD) {
+        return false;
+    }
+
+    let before = text[..start].chars().next_back();
+    let after = text[end..].chars().next();
+    !before.is_some_and(is_ultracode_identifier_or_path_char)
+        && !after.is_some_and(is_ultracode_identifier_or_path_char)
+}
+
+fn is_ultracode_identifier_or_path_char(ch: char) -> bool {
+    ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == '\\' || ch.is_ascii_alphanumeric()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_ultracode_keyword;
+
+    #[test]
+    fn ultracode_keyword_matches_word_token_anywhere() {
+        assert!(contains_ultracode_keyword("ultracode refactor this"));
+        assert!(contains_ultracode_keyword("  Ultracode: split this up"));
+        assert!(contains_ultracode_keyword("please use ultracode for this"));
+        assert!(contains_ultracode_keyword("ULTRACODE"));
+    }
+
+    #[test]
+    fn ultracode_keyword_does_not_match_substrings() {
+        assert!(!contains_ultracode_keyword("ultracoder mode"));
+        assert!(!contains_ultracode_keyword("ultracode_mode"));
+        assert!(!contains_ultracode_keyword("ULTRACODE-run checks"));
+        assert!(!contains_ultracode_keyword("my-ultracode-file"));
+        assert!(!contains_ultracode_keyword(""));
+    }
+
+    #[test]
+    fn ultracode_keyword_ignores_slash_quotes_brackets_and_paths() {
+        assert!(!contains_ultracode_keyword("/ultracode run checks"));
+        assert!(!contains_ultracode_keyword("say \"ultracode\" literally"));
+        assert!(!contains_ultracode_keyword("say 'ultracode' literally"));
+        assert!(!contains_ultracode_keyword("check `ultracode`"));
+        assert!(!contains_ultracode_keyword("ignore [ultracode] marker"));
+        assert!(!contains_ultracode_keyword("open src/ultracode/test.js"));
+        assert!(!contains_ultracode_keyword("open ultracode.js"));
     }
 }

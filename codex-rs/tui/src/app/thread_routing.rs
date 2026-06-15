@@ -696,6 +696,49 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::WorkflowCancel { run_id, cell_id } => {
+                app_server
+                    .thread_workflow_cancel(thread_id, run_id.to_string(), cell_id.to_string())
+                    .await?;
+                Ok(true)
+            }
+            AppCommand::WorkflowPause { run_id, cell_id } => {
+                app_server
+                    .thread_workflow_pause(thread_id, run_id.to_string(), cell_id.to_string())
+                    .await?;
+                Ok(true)
+            }
+            AppCommand::WorkflowContinue { run_id, cell_id } => {
+                app_server
+                    .thread_workflow_continue(thread_id, run_id.to_string(), cell_id.to_string())
+                    .await?;
+                Ok(true)
+            }
+            AppCommand::WorkflowAgentInterrupt { run_id, agent_id } => {
+                app_server
+                    .thread_workflow_agent_interrupt(
+                        thread_id,
+                        run_id.to_string(),
+                        agent_id.to_string(),
+                    )
+                    .await?;
+                Ok(true)
+            }
+            AppCommand::WorkflowAgentControl {
+                run_id,
+                agent_id,
+                action,
+            } => {
+                app_server
+                    .thread_workflow_agent_control(
+                        thread_id,
+                        run_id.to_string(),
+                        agent_id.to_string(),
+                        *action,
+                    )
+                    .await?;
+                Ok(true)
+            }
             AppCommand::RealtimeConversationStart { transport, voice } => {
                 app_server
                     .thread_realtime_start(thread_id, transport.clone(), voice.clone())

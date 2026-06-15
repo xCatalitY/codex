@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::registry::WorkflowAgentWorktree;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
@@ -37,8 +38,10 @@ use codex_thread_store::ReadThreadParams;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
+use tokio::process::Command;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -65,6 +68,9 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    pub(crate) workflow_worktree: Option<WorkflowAgentWorktree>,
+    pub(crate) workflow_transcript_path: Option<PathBuf>,
+    pub(crate) workflow_transcript_mirror_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +241,53 @@ impl AgentControl {
 
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    pub(crate) async fn load_agent_response_history_for_path(
+        &self,
+        agent_path: &AgentPath,
+    ) -> CodexResult<Vec<ResponseItem>> {
+        let state = self.upgrade()?;
+        let Some(thread_id) = self.state.agent_id_for_path(agent_path) else {
+            return Ok(Vec::new());
+        };
+        let thread = state.get_thread(thread_id).await?;
+        let history = thread
+            .load_history(/*include_archived*/ false)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("failed to load agent history {thread_id}: {err}"))
+            })?;
+        let mut response_items = Vec::new();
+        for item in history.items {
+            match item {
+                RolloutItem::ResponseItem(response_item) => response_items.push(response_item),
+                RolloutItem::Compacted(compacted) => {
+                    if let Some(replacement_history) = compacted.replacement_history {
+                        response_items.extend(replacement_history);
+                    } else {
+                        response_items.push(ResponseItem::from(compacted));
+                    }
+                }
+                RolloutItem::SessionMeta(_)
+                | RolloutItem::TurnContext(_)
+                | RolloutItem::EventMsg(_) => {}
+            }
+        }
+        Ok(response_items)
+    }
+
+    pub(crate) fn cleanup_completed_workflow_worktree(&self, agent_id: ThreadId) {
+        let Some(worktree) = self
+            .state
+            .agent_metadata_for_thread(agent_id)
+            .and_then(|metadata| metadata.workflow_worktree)
+        else {
+            return;
+        };
+        tokio::spawn(async move {
+            cleanup_workflow_worktree_if_unchanged(worktree).await;
+        });
     }
 
     pub(crate) fn ensure_agent_known(&self, agent_id: ThreadId) -> CodexResult<AgentMetadata> {
@@ -509,6 +562,9 @@ impl AgentControl {
             agent_nickname,
             agent_role,
             last_task_message: None,
+            workflow_worktree: None,
+            workflow_transcript_path: None,
+            workflow_transcript_mirror_path: None,
         };
         Ok((session_source, agent_metadata))
     }
@@ -653,6 +709,53 @@ impl AgentControl {
         }
 
         Ok(descendants)
+    }
+}
+
+async fn cleanup_workflow_worktree_if_unchanged(worktree: WorkflowAgentWorktree) {
+    let status_output = Command::new("git")
+        .arg("-C")
+        .arg(worktree.path.as_path())
+        .arg("status")
+        .arg("--porcelain")
+        .arg("--untracked-files=all")
+        .output()
+        .await;
+    let Ok(status_output) = status_output else {
+        warn!(
+            path = %worktree.path.display(),
+            "preserving workflow worktree because git status could not be run"
+        );
+        return;
+    };
+    if !status_output.status.success() {
+        warn!(
+            path = %worktree.path.display(),
+            "preserving workflow worktree because git status failed"
+        );
+        return;
+    }
+    if !status_output.stdout.is_empty() {
+        return;
+    }
+
+    let remove_output = Command::new("git")
+        .arg("-C")
+        .arg(worktree.repo_root.as_path())
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(worktree.path.as_path())
+        .output()
+        .await;
+    match remove_output {
+        Ok(output) if output.status.success() => {}
+        Ok(_) | Err(_) => {
+            warn!(
+                path = %worktree.path.display(),
+                "failed to remove unchanged workflow worktree"
+            );
+        }
     }
 }
 

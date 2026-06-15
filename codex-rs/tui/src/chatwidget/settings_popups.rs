@@ -268,6 +268,19 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
+    pub(crate) fn open_workflow_settings_popup(&mut self) {
+        let view = WorkflowSettingsView::new(
+            self.config.workflows.enabled,
+            self.config.workflows.mode,
+            self.config.workflows.approval,
+            self.config.workflows.keyword_trigger_enabled,
+            self.workflow_policy_items_for_settings(),
+            self.app_event_tx.clone(),
+            self.bottom_pane.list_keymap(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+    }
+
     fn personality_label(personality: Personality) -> &'static str {
         match personality {
             Personality::None => "None",

@@ -133,6 +133,7 @@ async fn submit_danger_full_access_user_turn(test: &TestCodex, text: &str) {
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

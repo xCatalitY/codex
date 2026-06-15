@@ -66,6 +66,7 @@ async fn submit_turn_with_policies(
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

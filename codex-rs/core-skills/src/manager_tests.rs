@@ -194,6 +194,27 @@ fn new_with_disabled_bundled_skills_removes_stale_cached_system_skills() {
     );
 }
 
+#[test]
+fn new_installs_system_workflows_under_codex_home() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+
+    let _skills_manager = SkillsManager::new(
+        codex_home.path().abs(),
+        /*bundled_skills_enabled*/ false,
+    );
+
+    let workflow_path = codex_home
+        .path()
+        .join("workflows/.system/current-status.js");
+    let workflow = fs::read_to_string(&workflow_path).expect("read system workflow");
+    assert!(
+        workflow.starts_with("export const meta = {"),
+        "unexpected workflow contents at {}: {workflow}",
+        workflow_path.display()
+    );
+    assert!(workflow.contains("name: 'current-status'"));
+}
+
 #[tokio::test]
 async fn skills_for_config_reuses_cache_for_same_effective_config() {
     let codex_home = tempfile::tempdir().expect("tempdir");

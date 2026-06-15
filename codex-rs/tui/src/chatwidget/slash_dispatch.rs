@@ -12,8 +12,9 @@ use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
-use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::bottom_pane::slash_commands::find_slash_command_with_workflows;
 use crate::goal_display::GOAL_USAGE;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -35,6 +36,7 @@ const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
+const EFFORT_USAGE: &str = "Usage: /effort [default|none|minimal|low|medium|high|xhigh|ultracode]";
 
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
@@ -96,6 +98,41 @@ impl ChatWidget {
                 /*hint*/ None,
             );
             false
+        }
+    }
+
+    fn apply_effort_slash_arg(&mut self, arg: &str) {
+        let normalized = arg.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "ultracode" => {
+                self.set_ultracode_from_user_action();
+                self.add_info_message(
+                    "Ultracode enabled for this thread.".to_string(),
+                    Some("Uses xhigh reasoning plus workflow orchestration.".to_string()),
+                );
+            }
+            "default" | "auto" => {
+                self.set_reasoning_effort_from_user_action(None);
+                self.add_info_message("Reasoning effort reset to default.".to_string(), None);
+            }
+            "max" => {
+                self.add_error_message("Codex does not support `/effort max`; use `/effort xhigh` or `/effort ultracode`.".to_string());
+            }
+            "extra-high" | "extra_high" => {
+                self.set_reasoning_effort_from_user_action(Some(ReasoningEffortConfig::XHigh));
+                self.add_info_message("Reasoning effort set to xhigh.".to_string(), None);
+            }
+            "" => self.add_error_message(EFFORT_USAGE.to_string()),
+            value => match value.parse::<ReasoningEffortConfig>() {
+                Ok(effort) => {
+                    let label = effort.as_str().to_string();
+                    self.set_reasoning_effort_from_user_action(Some(effort));
+                    self.add_info_message(format!("Reasoning effort set to {label}."), None);
+                }
+                Err(err) => {
+                    self.add_error_message(format!("{err}. {EFFORT_USAGE}"));
+                }
+            },
         }
     }
 
@@ -261,6 +298,18 @@ impl ChatWidget {
             }
             SlashCommand::Model => {
                 self.open_model_popup();
+            }
+            SlashCommand::Effort => {
+                self.add_error_message(EFFORT_USAGE.to_string());
+            }
+            SlashCommand::Workflow => {
+                self.add_workflows_output(/*include_runs*/ false);
+            }
+            SlashCommand::Workflows => {
+                self.add_workflows_output(/*include_runs*/ true);
+            }
+            SlashCommand::Config => {
+                self.open_workflow_settings_popup();
             }
             SlashCommand::Realtime => {
                 if !self.realtime_conversation_enabled() {
@@ -679,6 +728,19 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Effort if !trimmed.is_empty() => {
+                self.apply_effort_slash_arg(trimmed);
+            }
+            SlashCommand::Workflow if !trimmed.is_empty() => {
+                self.apply_workflow_slash_arg(trimmed);
+            }
+            SlashCommand::Workflows => {
+                if trimmed.is_empty() {
+                    self.add_workflows_output(/*include_runs*/ true);
+                } else {
+                    self.handle_workflows_slash_arg(trimmed);
+                }
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -891,9 +953,13 @@ impl ChatWidget {
         }
 
         let service_tier_commands = self.current_model_service_tier_commands();
-        let Some(command) =
-            find_slash_command(name, self.builtin_command_flags(), &service_tier_commands)
-        else {
+        let workflow_commands = self.current_workflow_slash_commands();
+        let Some(command) = find_slash_command_with_workflows(
+            name,
+            self.builtin_command_flags(),
+            &service_tier_commands,
+            &workflow_commands,
+        ) else {
             self.add_info_message(
                 format!(
                     r#"Unrecognized command '/{name}'. Type "/" for a list of supported commands."#
@@ -913,6 +979,16 @@ impl ChatWidget {
                     self.handle_service_tier_command_dispatch(command);
                     QueueDrain::Continue
                 }
+                SlashCommandItem::Workflow(command) => {
+                    self.submit_user_message(UserMessage {
+                        text: command.invocation_prompt(""),
+                        local_images,
+                        remote_image_urls,
+                        text_elements: Vec::new(),
+                        mention_bindings: Vec::new(),
+                    });
+                    QueueDrain::Stop
+                }
             };
         }
 
@@ -926,20 +1002,33 @@ impl ChatWidget {
             });
             return QueueDrain::Stop;
         }
-        let SlashCommandItem::Builtin(cmd) = command else {
-            self.submit_user_message(UserMessage {
-                text,
-                local_images,
-                remote_image_urls,
-                text_elements,
-                mention_bindings,
-            });
-            return QueueDrain::Stop;
-        };
 
         let trimmed_start = rest.trim_start();
         let leading_trimmed = rest.len().saturating_sub(trimmed_start.len());
         let trimmed_rest = trimmed_start.trim_end();
+        let cmd = match command {
+            SlashCommandItem::Builtin(cmd) => cmd,
+            SlashCommandItem::Workflow(command) => {
+                self.submit_user_message(UserMessage {
+                    text: command.invocation_prompt(trimmed_rest),
+                    local_images,
+                    remote_image_urls,
+                    text_elements: Vec::new(),
+                    mention_bindings: Vec::new(),
+                });
+                return QueueDrain::Stop;
+            }
+            SlashCommandItem::ServiceTier(_) => {
+                self.submit_user_message(UserMessage {
+                    text,
+                    local_images,
+                    remote_image_urls,
+                    text_elements,
+                    mention_bindings,
+                });
+                return QueueDrain::Stop;
+            }
+        };
         let args_elements = Self::slash_command_args_elements(
             trimmed_rest,
             rest_offset + leading_trimmed,
@@ -997,6 +1086,9 @@ impl ChatWidget {
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
+            | SlashCommand::Effort
+            | SlashCommand::Workflow
+            | SlashCommand::Workflows
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate
             | SlashCommand::Mcp
@@ -1021,6 +1113,7 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Config
             | SlashCommand::Realtime
             | SlashCommand::Settings
             | SlashCommand::Personality

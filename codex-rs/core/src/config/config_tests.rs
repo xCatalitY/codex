@@ -59,6 +59,9 @@ use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
+use codex_config::types::WorkflowApproval;
+use codex_config::types::WorkflowDefinitionConfig;
+use codex_config::types::WorkflowsToml;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
@@ -70,6 +73,7 @@ use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
@@ -304,6 +308,81 @@ consolidation_model = "gpt-5.2"
                 .expect("legacy memories config")
         )
         .disable_on_external_context
+    );
+
+    let custom_workflow_dir = tempdir().expect("workflow dir").abs();
+    let workflows = format!(
+        r#"
+[workflows]
+enabled = false
+mode = "ultracode"
+keyword_trigger_enabled = false
+approval = "ask"
+workflow_dirs = ["{}"]
+yield_time_ms = 250
+max_output_tokens = 4096
+
+[workflows.named.release]
+enabled = false
+approval = "allow"
+"#,
+        custom_workflow_dir.display()
+    );
+    let workflows_cfg =
+        toml::from_str::<ConfigToml>(&workflows).expect("workflows TOML should deserialize");
+    assert_eq!(
+        Some(WorkflowsToml {
+            enabled: Some(false),
+            mode: Some(WorkflowMode::Ultracode),
+            keyword_trigger_enabled: Some(false),
+            approval: Some(WorkflowApproval::Ask),
+            named: Some(HashMap::from([(
+                "release".to_string(),
+                WorkflowDefinitionConfig {
+                    enabled: Some(false),
+                    approval: Some(WorkflowApproval::Allow),
+                },
+            )])),
+            workflow_dirs: Some(vec![custom_workflow_dir.clone()]),
+            yield_time_ms: Some(250),
+            max_output_tokens: Some(4096),
+        }),
+        workflows_cfg.workflows
+    );
+
+    let codex_home = tempdir().expect("codex home").abs();
+    let cwd = tempdir().expect("cwd").abs();
+    let config = Config::load_from_base_config_with_overrides(
+        workflows_cfg,
+        ConfigOverrides {
+            cwd: Some(cwd.to_path_buf()),
+            ..ConfigOverrides::default()
+        },
+        codex_home.clone(),
+    )
+    .await
+    .expect("load config from workflow settings");
+    assert!(!config.workflows.enabled);
+    assert_eq!(WorkflowMode::Ultracode, config.workflows.mode);
+    assert!(!config.workflows.keyword_trigger_enabled);
+    assert_eq!(WorkflowApproval::Ask, config.workflows.approval);
+    assert_eq!(
+        Some(&WorkflowDefinitionConfig {
+            enabled: Some(false),
+            approval: Some(WorkflowApproval::Allow),
+        }),
+        config.workflows.named.get("release")
+    );
+    assert_eq!(250, config.workflows.yield_time_ms);
+    assert_eq!(Some(4096), config.workflows.max_output_tokens);
+    assert_eq!(
+        vec![
+            cwd.join(".codex/workflows"),
+            codex_home.join("workflows"),
+            custom_workflow_dir,
+            codex_home.join("workflows/.system"),
+        ],
+        config.workflows.workflow_dirs
     );
 }
 

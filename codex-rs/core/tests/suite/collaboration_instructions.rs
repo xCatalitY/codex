@@ -29,6 +29,7 @@ fn collab_mode_with_mode_and_instructions(
             model: "gpt-5.4".to_string(),
             reasoning_effort: None,
             developer_instructions: instructions.map(str::to_string),
+            workflow_mode: None,
         },
     }
 }
@@ -761,6 +762,7 @@ async fn empty_collaboration_instructions_are_ignored() -> Result<()> {
                     model: current_model,
                     reasoning_effort: None,
                     developer_instructions: Some("".to_string()),
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

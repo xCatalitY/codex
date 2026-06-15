@@ -37,6 +37,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
@@ -2452,6 +2453,27 @@ disabled_tools = [
 }
 
 #[tokio::test]
+async fn configured_workflow_mode_is_applied_at_session_start() {
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.workflows.mode = WorkflowMode::Ultracode;
+        },
+    )
+    .await;
+
+    assert_eq!(
+        WorkflowMode::Ultracode,
+        session.collaboration_mode().await.workflow_mode()
+    );
+    assert_eq!(
+        WorkflowMode::Ultracode,
+        turn_context.collaboration_mode.workflow_mode()
+    );
+}
+
+#[tokio::test]
 async fn record_initial_history_reconstructs_forked_transcript() {
     let (session, turn_context) = make_session_and_context().await;
     let (rollout_items, expected) = sample_rollout(&session, &turn_context).await;
@@ -2608,6 +2630,7 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             model: forked.session_configured.model.clone(),
             reasoning_effort: None,
             developer_instructions: Some("Fork turn collaboration instructions.".to_string()),
+            workflow_mode: None,
         },
     };
     forked
@@ -3279,6 +3302,8 @@ async fn set_rate_limits_retains_previous_credits() {
             model,
             reasoning_effort,
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
     let session_configuration = SessionConfiguration {
@@ -3386,6 +3411,8 @@ async fn set_rate_limits_updates_plan_type_when_present() {
             model,
             reasoning_effort,
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
     let session_configuration = SessionConfiguration {
@@ -3917,6 +3944,8 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
             model,
             reasoning_effort,
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
 
@@ -4770,6 +4799,8 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
             model,
             reasoning_effort: config.model_reasoning_effort.clone(),
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
     let session_configuration = SessionConfiguration {
@@ -4877,6 +4908,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             model,
             reasoning_effort,
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
     let default_environments = vec![local(config.cwd.clone())];
@@ -5109,6 +5141,8 @@ async fn make_session_with_config_and_rx(
             model,
             reasoning_effort: config.model_reasoning_effort.clone(),
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
     let default_environments = vec![local(config.cwd.clone())];
@@ -5211,6 +5245,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             model,
             reasoning_effort: config.model_reasoning_effort.clone(),
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
     let default_environments = vec![local(config.cwd.clone())];
@@ -6141,6 +6176,7 @@ async fn user_turn_updates_approvals_reviewer() {
                         model: turn_context.model_info.slug.clone(),
                         reasoning_effort: config.model_reasoning_effort.clone(),
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -6955,6 +6991,8 @@ where
             model,
             reasoning_effort,
             developer_instructions: None,
+            workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                .then_some(config.workflows.mode),
         },
     };
     let default_environments = vec![local(config.cwd.clone())];
@@ -8944,6 +8982,52 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
     session.emit_thread_idle_lifecycle_if_idle().await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn pending_trigger_turn_mailbox_schema_applies_to_started_turn() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                "pending trigger".to_string(),
+                /*trigger_turn*/ true,
+            )
+            .with_final_output_json_schema(Some(schema.clone())),
+        )
+        .await;
+
+    session
+        .maybe_start_turn_for_pending_work_with_sub_id("schema-turn".to_string())
+        .await;
+
+    let turn_context = {
+        let active = session.active_turn.lock().await;
+        active
+            .as_ref()
+            .and_then(|active_turn| active_turn.task.as_ref())
+            .map(|task| Arc::clone(&task.turn_context))
+            .expect("trigger-turn mailbox work should start a task")
+    };
+    assert_eq!(
+        turn_context.final_output_json_schema.as_ref(),
+        Some(&schema)
+    );
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]

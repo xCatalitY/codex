@@ -759,6 +759,7 @@ mod thread_processor_behavior_tests {
                     model: "gpt-5".to_string(),
                     reasoning_effort: None,
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             },
             session_source: SessionSource::Cli,

@@ -18,6 +18,7 @@ use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginShareDiscoverability;
 use codex_app_server_protocol::PluginSource;
 use codex_app_server_protocol::PluginSummary;
+use codex_app_server_protocol::PluginWorkflowDirectorySummary;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::set_project_trust_level;
@@ -543,6 +544,7 @@ async fn plugin_list_returns_empty_when_workspace_codex_plugins_disabled() -> Re
             marketplaces: Vec::new(),
             marketplace_load_errors: Vec::new(),
             featured_plugin_ids: Vec::new(),
+            workflow_directories: Vec::new(),
         }
     );
     Ok(())
@@ -909,6 +911,14 @@ async fn plugin_list_includes_install_and_enabled_state_from_config() -> Result<
     std::fs::create_dir_all(repo_root.path().join(".agents/plugins"))?;
     write_installed_plugin(&codex_home, "codex-curated", "enabled-plugin")?;
     write_installed_plugin(&codex_home, "codex-curated", "disabled-plugin")?;
+    let enabled_workflow_dir = codex_home
+        .path()
+        .join("plugins/cache/codex-curated/enabled-plugin/local/workflows");
+    let disabled_workflow_dir = codex_home
+        .path()
+        .join("plugins/cache/codex-curated/disabled-plugin/local/workflows");
+    std::fs::create_dir_all(&enabled_workflow_dir)?;
+    std::fs::create_dir_all(&disabled_workflow_dir)?;
     std::fs::write(
         repo_root.path().join(".agents/plugins/marketplace.json"),
         r#"{
@@ -970,6 +980,14 @@ enabled = false
     )
     .await??;
     let response: PluginListResponse = to_response(response)?;
+    assert_eq!(
+        response.workflow_directories,
+        vec![PluginWorkflowDirectorySummary {
+            plugin_id: "enabled-plugin@codex-curated".to_string(),
+            namespace: "enabled-plugin".to_string(),
+            path: AbsolutePathBuf::try_from(enabled_workflow_dir)?,
+        }]
+    );
 
     let marketplace = response
         .marketplaces
@@ -2866,6 +2884,7 @@ plugin_sharing = false
             marketplaces: Vec::new(),
             marketplace_load_errors: Vec::new(),
             featured_plugin_ids: Vec::new(),
+            workflow_directories: Vec::new(),
         }
     );
     wait_for_remote_plugin_request_count(

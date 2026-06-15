@@ -1175,6 +1175,31 @@ impl MessageProcessor {
                     .thread_shell_command(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadWorkflowCancel { params, .. } => {
+                self.thread_processor
+                    .thread_workflow_cancel(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowPause { params, .. } => {
+                self.thread_processor
+                    .thread_workflow_pause(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowContinue { params, .. } => {
+                self.thread_processor
+                    .thread_workflow_continue(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowAgentInterrupt { params, .. } => {
+                self.thread_processor
+                    .thread_workflow_agent_interrupt(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadWorkflowAgentControl { params, .. } => {
+                self.thread_processor
+                    .thread_workflow_agent_control(&request_id, params)
+                    .await
+            }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {
                 self.thread_processor
                     .thread_approve_guardian_denied_action(&request_id, params)

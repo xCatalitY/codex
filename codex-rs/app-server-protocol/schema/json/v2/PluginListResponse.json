@@ -500,6 +500,25 @@
         "source"
       ],
       "type": "object"
+    },
+    "PluginWorkflowDirectorySummary": {
+      "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "pluginId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "path",
+        "pluginId"
+      ],
+      "type": "object"
     }
   },
   "properties": {
@@ -520,6 +539,12 @@
     "marketplaces": {
       "items": {
         "$ref": "#/definitions/PluginMarketplaceEntry"
+      },
+      "type": "array"
+    },
+    "workflowDirectories": {
+      "items": {
+        "$ref": "#/definitions/PluginWorkflowDirectorySummary"
       },
       "type": "array"
     }

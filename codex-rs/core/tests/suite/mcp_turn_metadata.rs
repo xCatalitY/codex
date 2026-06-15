@@ -89,6 +89,7 @@ async fn submit_user_turn(
                             model: session_model,
                             reasoning_effort: None,
                             developer_instructions: None,
+                            workflow_mode: None,
                         },
                     })
                 }),
@@ -268,6 +269,7 @@ async fn mcp_tool_call_metadata_records_prior_request_user_input_tool() -> Resul
                 model: test.session_configured.model.clone(),
                 reasoning_effort: None,
                 developer_instructions: None,
+                workflow_mode: None,
             },
         }),
     )

@@ -16,6 +16,9 @@
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
+        "taskCreated",
+        "taskCompleted",
+        "notification",
         "stop"
       ],
       "type": "string"

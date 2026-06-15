@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app_event::AppEvent;
+use codex_config::types::WorkflowApproval;
 
 impl ChatWidget {
     /// Set the approval policy in the widget's config copy.
@@ -190,6 +191,123 @@ impl ChatWidget {
             mask.reasoning_effort = Some(effort);
         }
         self.refresh_model_dependent_surfaces();
+    }
+
+    pub(crate) fn set_reasoning_effort_from_user_action(
+        &mut self,
+        effort: Option<ReasoningEffortConfig>,
+    ) {
+        self.set_reasoning_effort(effort);
+        self.submit_collaboration_mode_settings_update();
+    }
+
+    pub(crate) fn set_workflow_mode_from_user_action(&mut self, workflow_mode: WorkflowMode) {
+        let mode = self
+            .effective_collaboration_mode()
+            .with_workflow_mode(workflow_mode);
+        self.set_effective_collaboration_mode(mode);
+        self.submit_collaboration_mode_settings_update();
+    }
+
+    pub(crate) fn set_ultracode_from_user_action(&mut self) {
+        let mode = self
+            .effective_collaboration_mode()
+            .with_updates(
+                /*model*/ None,
+                Some(Some(ReasoningEffortConfig::XHigh)),
+                /*developer_instructions*/ None,
+            )
+            .with_workflow_mode(WorkflowMode::Ultracode);
+        self.set_effective_collaboration_mode(mode);
+        self.submit_collaboration_mode_settings_update();
+    }
+
+    pub(crate) fn set_workflow_settings(
+        &mut self,
+        enabled: bool,
+        mode: WorkflowMode,
+        approval: WorkflowApproval,
+        keyword_trigger_enabled: bool,
+    ) {
+        self.config.workflows.enabled = enabled;
+        self.config.workflows.mode = mode;
+        self.config.workflows.approval = approval;
+        self.config.workflows.keyword_trigger_enabled = keyword_trigger_enabled;
+        if !enabled {
+            self.set_workflow_mode_from_user_action(WorkflowMode::Disabled);
+            return;
+        }
+        match mode {
+            WorkflowMode::Disabled | WorkflowMode::Dynamic => {
+                self.set_workflow_mode_from_user_action(mode);
+            }
+            WorkflowMode::Ultracode => self.set_ultracode_from_user_action(),
+        }
+    }
+
+    pub(crate) fn set_workflow_named_configs(
+        &mut self,
+        named: std::collections::HashMap<String, codex_config::types::WorkflowDefinitionConfig>,
+    ) {
+        self.config.workflows.named = named;
+    }
+
+    pub(crate) fn set_named_workflow_approval(
+        &mut self,
+        workflow_name: &str,
+        approval: Option<WorkflowApproval>,
+    ) {
+        match approval {
+            Some(approval) => {
+                self.config
+                    .workflows
+                    .named
+                    .entry(workflow_name.to_string())
+                    .or_default()
+                    .approval = Some(approval);
+            }
+            None => {
+                let should_remove =
+                    if let Some(config) = self.config.workflows.named.get_mut(workflow_name) {
+                        config.approval = None;
+                        config.enabled.is_none()
+                    } else {
+                        false
+                    };
+                if should_remove {
+                    self.config.workflows.named.remove(workflow_name);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn set_named_workflow_enabled(
+        &mut self,
+        workflow_name: &str,
+        enabled: Option<bool>,
+    ) {
+        match enabled {
+            Some(enabled) => {
+                self.config
+                    .workflows
+                    .named
+                    .entry(workflow_name.to_string())
+                    .or_default()
+                    .enabled = Some(enabled);
+            }
+            None => {
+                let should_remove =
+                    if let Some(config) = self.config.workflows.named.get_mut(workflow_name) {
+                        config.enabled = None;
+                        config.approval.is_none()
+                    } else {
+                        false
+                    };
+                if should_remove {
+                    self.config.workflows.named.remove(workflow_name);
+                }
+            }
+        }
     }
 
     /// Set the personality in the widget's config copy.
@@ -405,6 +523,10 @@ impl ChatWidget {
             .map_or(PlanModeNudgeScope::NewThread, PlanModeNudgeScope::Thread)
     }
 
+    fn workflow_keyword_nudge_scope(&self) -> PlanModeNudgeScope {
+        self.plan_mode_nudge_scope()
+    }
+
     /// Returns whether the current draft should replace the normal footer with the Plan-mode nudge.
     ///
     /// `ChatWidget` owns this policy because it can combine lexical draft matching with mode
@@ -428,16 +550,53 @@ impl ChatWidget {
                 .contains(&self.plan_mode_nudge_scope())
     }
 
-    /// Synchronizes the footer presentation with the current Plan-mode nudge policy.
+    pub(super) fn workflow_keyword_trigger_suppressed_for_text(&self, text: &str) -> bool {
+        self.suppressed_workflow_keyword_nudge
+            .as_ref()
+            .is_some_and(|suppressed| {
+                suppressed.scope == self.workflow_keyword_nudge_scope() && suppressed.text == text
+            })
+    }
+
+    /// Returns whether the current draft should replace the normal footer with the workflow keyword nudge.
+    pub(super) fn should_show_workflow_keyword_nudge(&self) -> bool {
+        let text = self.bottom_pane.composer_text();
+        let trimmed = text.trim_start();
+        self.collaboration_modes_enabled()
+            && self.config.workflows.keyword_trigger_enabled
+            && self.effective_collaboration_mode().workflow_mode() != WorkflowMode::Ultracode
+            && self.bottom_pane.composer_input_enabled()
+            && !self.bottom_pane.is_task_running()
+            && self.bottom_pane.no_modal_or_popup_active()
+            && !trimmed.starts_with('/')
+            && !trimmed.starts_with('!')
+            && input_submission::contains_ultracode_keyword(&text)
+            && !self.workflow_keyword_trigger_suppressed_for_text(&text)
+            && !self.should_show_plan_mode_nudge()
+    }
+
+    /// Synchronizes footer nudges with the current draft policy.
     pub(super) fn refresh_plan_mode_nudge(&mut self) {
-        self.bottom_pane
-            .set_plan_mode_nudge_visible(self.should_show_plan_mode_nudge());
+        let show_plan = self.should_show_plan_mode_nudge();
+        self.bottom_pane.set_plan_mode_nudge_visible(show_plan);
+        self.bottom_pane.set_workflow_keyword_nudge_visible(
+            !show_plan && self.should_show_workflow_keyword_nudge(),
+        );
     }
 
     /// Hides the nudge for the current thread scope until the user changes conversation context.
     pub(super) fn dismiss_plan_mode_nudge(&mut self) {
         self.dismissed_plan_mode_nudge_scopes
             .insert(self.plan_mode_nudge_scope());
+        self.refresh_plan_mode_nudge();
+    }
+
+    pub(super) fn dismiss_workflow_keyword_nudge(&mut self) {
+        let text = self.bottom_pane.composer_text();
+        self.suppressed_workflow_keyword_nudge = Some(WorkflowKeywordNudgeSuppression {
+            scope: self.workflow_keyword_nudge_scope(),
+            text,
+        });
         self.refresh_plan_mode_nudge();
     }
 
@@ -588,6 +747,7 @@ impl ChatWidget {
             model: Some(settings.model.clone()),
             reasoning_effort: Some(settings.reasoning_effort.clone()),
             developer_instructions: Some(settings.developer_instructions),
+            workflow_mode: Some(settings.workflow_mode),
         });
         self.update_collaboration_mode_indicator();
         self.refresh_plan_mode_nudge();

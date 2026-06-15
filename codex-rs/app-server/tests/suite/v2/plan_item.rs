@@ -147,6 +147,7 @@ async fn start_plan_mode_turn(mcp: &mut TestAppServer) -> Result<codex_app_serve
             model: "mock-model".to_string(),
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
     let turn_req = mcp

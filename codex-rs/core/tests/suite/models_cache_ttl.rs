@@ -112,6 +112,7 @@ async fn renews_cache_ttl_on_matching_models_etag() -> Result<()> {
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

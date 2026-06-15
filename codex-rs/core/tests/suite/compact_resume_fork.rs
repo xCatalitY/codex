@@ -559,6 +559,7 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
                     model: MODEL.to_string(),
                     reasoning_effort: None,
                     developer_instructions: Some(ROLLED_BACK_DEV_INSTRUCTIONS.to_string()),
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

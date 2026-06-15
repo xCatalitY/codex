@@ -4507,6 +4507,27 @@
           "type": "object"
         },
         {
+          "description": "EXPERIMENTAL - workflow runtime progress emitted by the workflow tool.",
+          "properties": {
+            "method": {
+              "enum": [
+                "workflow/progress"
+              ],
+              "title": "Workflow/progressNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/WorkflowProgressNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Workflow/progressNotification",
+          "type": "object"
+        },
+        {
           "description": "Stream base64-encoded stdout/stderr chunks for a running `command/exec` session.",
           "properties": {
             "method": {
@@ -10083,6 +10104,38 @@
             ],
             "title": "RequestPermissionsGuardianApprovalReviewAction",
             "type": "object"
+          },
+          {
+            "properties": {
+              "metadataName": {
+                "type": "string"
+              },
+              "sourceKind": {
+                "type": "string"
+              },
+              "sourceName": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "workflow"
+                ],
+                "title": "WorkflowGuardianApprovalReviewActionType",
+                "type": "string"
+              },
+              "workflowName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "metadataName",
+              "sourceKind",
+              "sourceName",
+              "type",
+              "workflowName"
+            ],
+            "title": "WorkflowGuardianApprovalReviewAction",
+            "type": "object"
           }
         ]
       },
@@ -10192,6 +10245,9 @@
           "userPromptSubmit",
           "subagentStart",
           "subagentStop",
+          "taskCreated",
+          "taskCompleted",
+          "notification",
           "stop"
         ],
         "type": "string"
@@ -12858,6 +12914,12 @@
               "$ref": "#/definitions/v2/PluginMarketplaceEntry"
             },
             "type": "array"
+          },
+          "workflowDirectories": {
+            "items": {
+              "$ref": "#/definitions/v2/PluginWorkflowDirectorySummary"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -13510,6 +13572,25 @@
       "PluginUninstallResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "PluginUninstallResponse",
+        "type": "object"
+      },
+      "PluginWorkflowDirectorySummary": {
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "path": {
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
+          },
+          "pluginId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "path",
+          "pluginId"
+        ],
         "type": "object"
       },
       "PluginsMigration": {
@@ -15292,6 +15373,16 @@
             "anyOf": [
               {
                 "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WorkflowMode"
               },
               {
                 "type": "null"
@@ -19680,6 +19771,161 @@
           "samplePaths"
         ],
         "title": "WindowsWorldWritableWarningNotification",
+        "type": "object"
+      },
+      "WorkflowAgentControlAction": {
+        "description": "Submission operation",
+        "enum": [
+          "skip",
+          "retry"
+        ],
+        "type": "string"
+      },
+      "WorkflowMode": {
+        "description": "Workflow overlay for a collaboration mode.",
+        "enum": [
+          "disabled",
+          "dynamic",
+          "ultracode"
+        ],
+        "type": "string"
+      },
+      "WorkflowProgressNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cellId": {
+            "type": "string"
+          },
+          "child": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "childIndex": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "childRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "itemIndex": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stageIndex": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stepIndex": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "unixMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "workflow": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflowToolCallId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "cellId",
+          "event",
+          "runId",
+          "threadId",
+          "turnId",
+          "unixMs"
+        ],
+        "title": "WorkflowProgressNotification",
         "type": "object"
       },
       "WriteStatus": {

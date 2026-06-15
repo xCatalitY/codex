@@ -64,6 +64,7 @@ async fn request_user_input_round_trip() -> Result<()> {
                     model: "mock-model".to_string(),
                     reasoning_effort: Some(ReasoningEffort::Medium),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "NullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "properties": {
+    "agent_id": {
+      "type": "string"
+    },
+    "agent_type": {
+      "type": "string"
+    },
+    "cell_id": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "hook_event_name": {
+      "const": "TaskCreated",
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "permission_mode": {
+      "enum": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "dontAsk",
+        "bypassPermissions"
+      ],
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "task_description": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "task_subject": {
+      "type": "string"
+    },
+    "transcript_path": {
+      "$ref": "#/definitions/NullableString"
+    },
+    "turn_id": {
+      "description": "Codex extension: expose the active turn id to internal turn-scoped hooks.",
+      "type": "string"
+    },
+    "workflow_name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "cwd",
+    "hook_event_name",
+    "model",
+    "permission_mode",
+    "session_id",
+    "task_id",
+    "task_subject",
+    "transcript_path",
+    "turn_id",
+    "workflow_name"
+  ],
+  "title": "task-created.command.input",
+  "type": "object"
+}

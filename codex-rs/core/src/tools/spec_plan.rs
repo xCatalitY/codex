@@ -25,6 +25,10 @@ use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandler;
 use crate::tools::handlers::ViewImageHandler;
+use crate::tools::handlers::WORKFLOW_CONTROL_TOOL_NAME;
+use crate::tools::handlers::WORKFLOW_TOOL_NAME;
+use crate::tools::handlers::WorkflowControlHandler;
+use crate::tools::handlers::WorkflowHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::agent_jobs::ReportAgentJobResultHandler;
 use crate::tools::handlers::agent_jobs::SpawnAgentsOnCsvHandler;
@@ -59,6 +63,7 @@ use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -317,6 +322,11 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
     }
 }
 
+fn workflow_tool_enabled(turn_context: &TurnContext) -> bool {
+    turn_context.config.workflows.enabled
+        && turn_context.collaboration_mode.workflow_mode() != WorkflowMode::Disabled
+}
+
 fn agent_jobs_tools_enabled(turn_context: &TurnContext) -> bool {
     turn_context.features.get().enabled(Feature::SpawnCsv) && collab_tools_enabled(turn_context)
 }
@@ -439,6 +449,9 @@ fn build_code_mode_executors(
     let mut deferred_tools_available = false;
     let deferred_tools_guidance_enabled = search_tool_enabled(turn_context);
     for executor in executors {
+        if executor.tool_name() == ToolName::plain(WORKFLOW_TOOL_NAME) {
+            continue;
+        }
         let exposure = executor.exposure();
         if exposure == ToolExposure::DirectModelOnly {
             continue;
@@ -483,6 +496,26 @@ fn build_code_mode_executors(
         )),
         Arc::new(CodeModeWaitHandler),
     ]
+}
+
+fn add_workflow_tool(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let turn_context = context.turn_context;
+    if !workflow_tool_enabled(turn_context) {
+        return;
+    }
+
+    let nested_tool_specs = planned_tools
+        .runtimes()
+        .iter()
+        .filter(|executor| {
+            executor.exposure() != ToolExposure::Hidden
+                || executor.tool_name() == ToolName::plain(WORKFLOW_CONTROL_TOOL_NAME)
+        })
+        .filter(|executor| executor.tool_name() != ToolName::plain(WORKFLOW_TOOL_NAME))
+        .filter(|executor| !is_excluded_from_code_mode(turn_context, &executor.tool_name()))
+        .map(|executor| executor.spec())
+        .collect();
+    planned_tools.add(WorkflowHandler::new(nested_tool_specs));
 }
 
 fn merge_into_namespaces(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
@@ -562,6 +595,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_runtime_tools(context, planned_tools);
     add_extension_tools(context, planned_tools);
     add_dynamic_tools(context, planned_tools);
+    add_workflow_tool(context, planned_tools);
     for spec in hosted_model_tool_specs(context) {
         planned_tools.add_hosted_spec(spec);
     }
@@ -641,6 +675,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     let environment_mode = turn_context.tool_environment_mode();
 
     planned_tools.add(PlanHandler);
+    planned_tools.add_dispatch_only(WorkflowControlHandler);
 
     if turn_context.config.experimental_request_user_input_enabled {
         planned_tools.add(RequestUserInputHandler {

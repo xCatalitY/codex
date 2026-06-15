@@ -87,6 +87,72 @@ statusMessage = "checking"
 }
 
 #[test]
+fn hook_events_deserialize_workflow_lifecycle_events() {
+    let parsed: HookEventsToml = toml::from_str(
+        r#"
+[[TaskCreated]]
+matcher = "^release$"
+
+[[TaskCreated.hooks]]
+type = "command"
+command = "python3 /tmp/task-created.py"
+
+[[TaskCompleted]]
+matcher = "^release$"
+
+[[TaskCompleted.hooks]]
+type = "command"
+command = "python3 /tmp/task-completed.py"
+
+[[Notification]]
+matcher = "^phase$"
+
+[[Notification.hooks]]
+type = "command"
+command = "python3 /tmp/notification.py"
+"#,
+    )
+    .expect("workflow hook events TOML should deserialize");
+
+    assert_eq!(
+        parsed,
+        HookEventsToml {
+            task_created: vec![MatcherGroup {
+                matcher: Some("^release$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "python3 /tmp/task-created.py".to_string(),
+                    command_windows: None,
+                    timeout_sec: None,
+                    r#async: false,
+                    status_message: None,
+                }],
+            }],
+            task_completed: vec![MatcherGroup {
+                matcher: Some("^release$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "python3 /tmp/task-completed.py".to_string(),
+                    command_windows: None,
+                    timeout_sec: None,
+                    r#async: false,
+                    status_message: None,
+                }],
+            }],
+            notification: vec![MatcherGroup {
+                matcher: Some("^phase$".to_string()),
+                hooks: vec![HookHandlerConfig::Command {
+                    command: "python3 /tmp/notification.py".to_string(),
+                    command_windows: None,
+                    timeout_sec: None,
+                    r#async: false,
+                    status_message: None,
+                }],
+            }],
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn hooks_toml_deserializes_inline_events_and_state_map() {
     let parsed: HooksToml = toml::from_str(
         r#"

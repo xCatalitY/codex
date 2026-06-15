@@ -547,6 +547,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             model: "gpt-5.4".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
 
@@ -875,6 +876,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
                         model: default_model.clone(),
                         reasoning_effort: default_effort.clone(),
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -903,6 +905,7 @@ async fn send_user_turn_with_no_changes_does_not_send_environment_context() -> a
                         model: default_model.clone(),
                         reasoning_effort: default_effort,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -1014,6 +1017,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
                         model: default_model,
                         reasoning_effort: default_effort,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -1045,6 +1049,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
                         model: "o3".to_string(),
                         reasoning_effort: Some(ReasoningEffort::High),
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

@@ -4353,6 +4353,102 @@
         }
       ]
     },
+    "WorkflowApproval": {
+      "enum": [
+        "auto",
+        "ask",
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "WorkflowDefinitionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowApproval"
+            }
+          ],
+          "description": "Approval behavior for this named workflow."
+        },
+        "enabled": {
+          "description": "When `false`, blocks this named workflow before its script is evaluated.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "WorkflowMode": {
+      "description": "Workflow overlay for a collaboration mode.",
+      "enum": [
+        "disabled",
+        "dynamic",
+        "ultracode"
+      ],
+      "type": "string"
+    },
+    "WorkflowsToml": {
+      "additionalProperties": false,
+      "description": "Settings for JavaScript workflow execution.",
+      "properties": {
+        "approval": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowApproval"
+            }
+          ],
+          "default": null,
+          "description": "Default workflow approval behavior."
+        },
+        "enabled": {
+          "description": "When `false`, hides the workflow tool even if a session enables workflow mode.",
+          "type": "boolean"
+        },
+        "keyword_trigger_enabled": {
+          "description": "Whether the `ultracode` prompt keyword can enable one-turn workflow mode.",
+          "type": "boolean"
+        },
+        "max_output_tokens": {
+          "description": "Token budget for direct workflow output.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkflowMode"
+            }
+          ],
+          "description": "Initial workflow mode for new sessions."
+        },
+        "named": {
+          "additionalProperties": {
+            "$ref": "#/definitions/WorkflowDefinitionConfig"
+          },
+          "default": null,
+          "description": "Per-named-workflow approval overrides keyed by workflow invocation name.",
+          "type": "object"
+        },
+        "workflow_dirs": {
+          "default": null,
+          "description": "Additional directories searched by `workflow({ name: ... })` and `/workflow`.",
+          "items": {
+            "$ref": "#/definitions/AbsolutePathBuf"
+          },
+          "type": "array"
+        },
+        "yield_time_ms": {
+          "description": "Initial wait before a long-running workflow yields a run id.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "WorkspaceRootsToml": {
       "type": "object"
     }
@@ -5242,6 +5338,14 @@
       ],
       "default": null,
       "description": "Windows-specific configuration."
+    },
+    "workflows": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WorkflowsToml"
+        }
+      ],
+      "description": "JavaScript workflow runtime settings."
     }
   },
   "title": "ConfigToml",

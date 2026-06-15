@@ -173,6 +173,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
                         model: session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

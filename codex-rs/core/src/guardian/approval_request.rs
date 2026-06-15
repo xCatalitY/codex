@@ -74,6 +74,16 @@ pub(crate) enum GuardianApprovalRequest {
         reason: Option<String>,
         permissions: RequestPermissionProfile,
     },
+    Workflow {
+        id: String,
+        workflow_name: String,
+        source_kind: String,
+        source_name: String,
+        source_path: Option<String>,
+        metadata_name: String,
+        metadata_description: String,
+        args: Option<Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -167,6 +177,33 @@ struct RequestPermissionsApprovalAction<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a String>,
     permissions: &'a RequestPermissionProfile,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowApprovalAction<'a> {
+    tool: &'static str,
+    workflow_name: &'a str,
+    source: WorkflowApprovalSource<'a>,
+    metadata: WorkflowApprovalMetadata<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<&'a Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowApprovalSource<'a> {
+    kind: &'a str,
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowApprovalMetadata<'a> {
+    name: &'a str,
+    description: &'a str,
 }
 
 fn serialize_guardian_action(value: impl Serialize) -> serde_json::Result<Value> {
@@ -369,6 +406,29 @@ pub(crate) fn guardian_approval_request_to_json(
             reason: reason.as_ref(),
             permissions,
         }),
+        GuardianApprovalRequest::Workflow {
+            id: _,
+            workflow_name,
+            source_kind,
+            source_name,
+            source_path,
+            metadata_name,
+            metadata_description,
+            args,
+        } => serialize_guardian_action(WorkflowApprovalAction {
+            tool: "workflow",
+            workflow_name,
+            source: WorkflowApprovalSource {
+                kind: source_kind,
+                name: source_name,
+                path: source_path.as_ref(),
+            },
+            metadata: WorkflowApprovalMetadata {
+                name: metadata_name,
+                description: metadata_description,
+            },
+            args: args.as_ref(),
+        }),
     }
 }
 
@@ -437,6 +497,18 @@ pub(crate) fn guardian_assessment_action(
             reason: reason.clone(),
             permissions: permissions.clone(),
         },
+        GuardianApprovalRequest::Workflow {
+            workflow_name,
+            source_kind,
+            source_name,
+            metadata_name,
+            ..
+        } => GuardianAssessmentAction::Workflow {
+            workflow_name: workflow_name.clone(),
+            source_kind: source_kind.clone(),
+            source_name: source_name.clone(),
+            metadata_name: metadata_name.clone(),
+        },
     }
 }
 
@@ -497,6 +569,9 @@ pub(crate) fn guardian_reviewed_action(
         GuardianApprovalRequest::RequestPermissions { .. } => {
             GuardianReviewedAction::RequestPermissions {}
         }
+        GuardianApprovalRequest::Workflow { source_kind, .. } => GuardianReviewedAction::Workflow {
+            source_kind: source_kind.clone(),
+        },
     }
 }
 
@@ -506,7 +581,8 @@ pub(crate) fn guardian_request_target_item_id(request: &GuardianApprovalRequest)
         | GuardianApprovalRequest::ExecCommand { id, .. }
         | GuardianApprovalRequest::ApplyPatch { id, .. }
         | GuardianApprovalRequest::McpToolCall { id, .. }
-        | GuardianApprovalRequest::RequestPermissions { id, .. } => Some(id),
+        | GuardianApprovalRequest::RequestPermissions { id, .. }
+        | GuardianApprovalRequest::Workflow { id, .. } => Some(id),
         GuardianApprovalRequest::NetworkAccess { .. } => None,
         #[cfg(unix)]
         GuardianApprovalRequest::Execve { id, .. } => Some(id),
@@ -523,7 +599,8 @@ pub(crate) fn guardian_request_turn_id<'a>(
         GuardianApprovalRequest::Shell { .. }
         | GuardianApprovalRequest::ExecCommand { .. }
         | GuardianApprovalRequest::ApplyPatch { .. }
-        | GuardianApprovalRequest::McpToolCall { .. } => default_turn_id,
+        | GuardianApprovalRequest::McpToolCall { .. }
+        | GuardianApprovalRequest::Workflow { .. } => default_turn_id,
         #[cfg(unix)]
         GuardianApprovalRequest::Execve { .. } => default_turn_id,
     }

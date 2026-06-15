@@ -53,6 +53,8 @@ use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
 use codex_config::types::WindowsSandboxModeToml;
+use codex_config::types::WorkflowApproval;
+use codex_config::types::WorkflowDefinitionConfig;
 use codex_core_plugins::PluginsConfigInput;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
@@ -90,6 +92,7 @@ use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
@@ -163,6 +166,7 @@ pub(crate) use resolved_permission_profile::PermissionProfileState;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
 const DEFAULT_IGNORE_LARGE_UNTRACKED_FILES: i64 = 10 * 1024 * 1024;
+const DEFAULT_WORKFLOW_YIELD_TIME_MS: u64 = 10_000;
 
 /// Compatibility-only config retained so legacy `ghost_snapshot` settings
 /// continue to load even though snapshots are no longer produced.
@@ -986,6 +990,9 @@ pub struct Config {
     /// Configuration for the experimental code-mode tool surface.
     pub code_mode: CodeModeConfig,
 
+    /// Configuration for JavaScript workflow execution.
+    pub workflows: WorkflowsConfig,
+
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
@@ -1041,6 +1048,42 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CodeModeConfig {
     pub excluded_tool_namespaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowsConfig {
+    pub enabled: bool,
+    pub mode: WorkflowMode,
+    pub keyword_trigger_enabled: bool,
+    pub approval: WorkflowApproval,
+    pub named: HashMap<String, WorkflowDefinitionConfig>,
+    pub workflow_dirs: Vec<AbsolutePathBuf>,
+    pub plugin_workflow_dirs: Vec<WorkflowPluginDirectory>,
+    pub yield_time_ms: u64,
+    pub max_output_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowPluginDirectory {
+    pub namespace: String,
+    pub plugin_id: String,
+    pub dir: AbsolutePathBuf,
+}
+
+impl Default for WorkflowsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: WorkflowMode::Disabled,
+            keyword_trigger_enabled: true,
+            approval: WorkflowApproval::Auto,
+            named: HashMap::new(),
+            workflow_dirs: Vec::new(),
+            plugin_workflow_dirs: Vec::new(),
+            yield_time_ms: DEFAULT_WORKFLOW_YIELD_TIME_MS,
+            max_output_tokens: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2323,6 +2366,47 @@ fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     }
 }
 
+fn resolve_workflows_config(
+    config_toml: &ConfigToml,
+    cwd: &AbsolutePathBuf,
+    codex_home: &AbsolutePathBuf,
+) -> WorkflowsConfig {
+    let defaults = WorkflowsConfig::default();
+    let workflow_toml = config_toml.workflows.as_ref();
+    let mut workflow_dirs = vec![cwd.join(".codex/workflows"), codex_home.join("workflows")];
+    if let Some(configured_dirs) = workflow_toml.and_then(|config| config.workflow_dirs.as_ref()) {
+        workflow_dirs.extend(configured_dirs.iter().cloned());
+    }
+    workflow_dirs.push(codex_home.join("workflows/.system"));
+    dedupe_absolute_paths(&mut workflow_dirs);
+
+    WorkflowsConfig {
+        enabled: workflow_toml
+            .and_then(|config| config.enabled)
+            .unwrap_or(defaults.enabled),
+        mode: workflow_toml
+            .and_then(|config| config.mode)
+            .unwrap_or(defaults.mode),
+        keyword_trigger_enabled: workflow_toml
+            .and_then(|config| config.keyword_trigger_enabled)
+            .unwrap_or(defaults.keyword_trigger_enabled),
+        approval: workflow_toml
+            .and_then(|config| config.approval)
+            .unwrap_or(defaults.approval),
+        named: workflow_toml
+            .and_then(|config| config.named.clone())
+            .unwrap_or(defaults.named),
+        workflow_dirs,
+        plugin_workflow_dirs: defaults.plugin_workflow_dirs,
+        yield_time_ms: workflow_toml
+            .and_then(|config| config.yield_time_ms)
+            .unwrap_or(defaults.yield_time_ms),
+        max_output_tokens: workflow_toml
+            .and_then(|config| config.max_output_tokens)
+            .or(defaults.max_output_tokens),
+    }
+}
+
 fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config {
     let base = multi_agent_v2_toml_config(config_toml.features.as_ref());
     let max_concurrent_threads_per_session = base
@@ -3033,6 +3117,7 @@ impl Config {
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
+        let workflows = resolve_workflows_config(&cfg, &resolved_cwd, &codex_home);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
@@ -3566,6 +3651,7 @@ impl Config {
             web_search_config,
             experimental_request_user_input_enabled,
             code_mode,
+            workflows,
             use_experimental_unified_exec_tool,
             background_terminal_max_timeout,
             ghost_snapshot,

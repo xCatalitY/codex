@@ -6,23 +6,37 @@
 
 use super::background_requests::request_plugin_list;
 use super::*;
+use crate::legacy_core::config::WorkflowPluginDirectory;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginSummary;
 use codex_plugin::PluginCapabilitySummary;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PluginMentionRefresh {
+    pub plugins: Vec<PluginCapabilitySummary>,
+    pub workflow_dirs: Vec<WorkflowPluginDirectory>,
+}
+
 pub(super) async fn fetch_plugin_mentions(
     request_handle: AppServerRequestHandle,
     cwd: PathBuf,
-) -> Result<Vec<PluginCapabilitySummary>> {
+) -> Result<PluginMentionRefresh> {
     let response = request_plugin_list(request_handle, cwd).await?;
     Ok(plugin_mentions_from_list_response(response))
 }
 
-fn plugin_mentions_from_list_response(
-    response: PluginListResponse,
-) -> Vec<PluginCapabilitySummary> {
-    response
+fn plugin_mentions_from_list_response(response: PluginListResponse) -> PluginMentionRefresh {
+    let workflow_dirs = response
+        .workflow_directories
+        .iter()
+        .map(|source| WorkflowPluginDirectory {
+            namespace: source.namespace.clone(),
+            plugin_id: source.plugin_id.clone(),
+            dir: source.path.clone(),
+        })
+        .collect::<Vec<_>>();
+    let plugins = response
         .marketplaces
         .into_iter()
         .flat_map(|marketplace| {
@@ -32,7 +46,12 @@ fn plugin_mentions_from_list_response(
                 .into_iter()
                 .filter_map(move |plugin| plugin_mention_from_summary(&marketplace_name, plugin))
         })
-        .collect()
+        .collect();
+
+    PluginMentionRefresh {
+        plugins,
+        workflow_dirs,
+    }
 }
 
 fn plugin_is_eligible_for_mentions(plugin: &PluginSummary) -> bool {
@@ -91,6 +110,8 @@ mod tests {
     use codex_app_server_protocol::PluginListResponse;
     use codex_app_server_protocol::PluginMarketplaceEntry;
     use codex_app_server_protocol::PluginSource;
+    use codex_app_server_protocol::PluginWorkflowDirectorySummary;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -112,18 +133,34 @@ mod tests {
             }],
             marketplace_load_errors: Vec::new(),
             featured_plugin_ids: Vec::new(),
+            workflow_directories: vec![PluginWorkflowDirectorySummary {
+                plugin_id: "active@server-marketplace".to_string(),
+                namespace: "active".to_string(),
+                path: AbsolutePathBuf::try_from(std::path::PathBuf::from("/tmp/active/workflows"))
+                    .expect("absolute workflow path"),
+            }],
         };
 
         assert_eq!(
             plugin_mentions_from_list_response(response),
-            vec![PluginCapabilitySummary {
-                config_name: "active@server-marketplace".to_string(),
-                display_name: "active".to_string(),
-                description: Some("server-marketplace".to_string()),
-                has_skills: false,
-                mcp_server_names: Vec::new(),
-                app_connector_ids: Vec::new(),
-            }]
+            PluginMentionRefresh {
+                plugins: vec![PluginCapabilitySummary {
+                    config_name: "active@server-marketplace".to_string(),
+                    display_name: "active".to_string(),
+                    description: Some("server-marketplace".to_string()),
+                    has_skills: false,
+                    mcp_server_names: Vec::new(),
+                    app_connector_ids: Vec::new(),
+                }],
+                workflow_dirs: vec![WorkflowPluginDirectory {
+                    namespace: "active".to_string(),
+                    plugin_id: "active@server-marketplace".to_string(),
+                    dir: AbsolutePathBuf::try_from(std::path::PathBuf::from(
+                        "/tmp/active/workflows",
+                    ))
+                    .expect("absolute workflow path"),
+                }],
+            }
         );
     }
 

@@ -133,6 +133,7 @@ pub(crate) enum RuntimeCommand {
     ToolResponse { id: String, result: JsonValue },
     ToolError { id: String, error_text: String },
     TimeoutFired { id: u64 },
+    PauseUntilResumed,
     Terminate,
 }
 
@@ -270,7 +271,7 @@ fn run_runtime(
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     command_rx: std_mpsc::Receiver<RuntimeCommand>,
     control_rx: std_mpsc::Receiver<RuntimeControlCommand>,
-    pending_mode: PendingRuntimeMode,
+    mut pending_mode: PendingRuntimeMode,
     isolate_handle_tx: std_mpsc::SyncSender<v8::IsolateHandle>,
     runtime_command_tx: std_mpsc::Sender<RuntimeCommand>,
 ) {
@@ -327,13 +328,18 @@ fn run_runtime(
 
     let mut pending_promise = pending_promise;
     loop {
-        let Some(command) = next_runtime_command(&event_tx, &command_rx, &control_rx, pending_mode)
+        let Some(command) =
+            next_runtime_command(&event_tx, &command_rx, &control_rx, &mut pending_mode)
         else {
             break;
         };
 
         match command {
             RuntimeCommand::Terminate => break,
+            RuntimeCommand::PauseUntilResumed => {
+                pending_mode = PendingRuntimeMode::PauseUntilResumed;
+                continue;
+            }
             RuntimeCommand::ToolResponse { id, result } => {
                 if let Err(error_text) =
                     module_loader::resolve_tool_response(scope, &id, Ok(result))
@@ -383,7 +389,7 @@ fn next_runtime_command(
     event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
     command_rx: &std_mpsc::Receiver<RuntimeCommand>,
     control_rx: &std_mpsc::Receiver<RuntimeControlCommand>,
-    pending_mode: PendingRuntimeMode,
+    pending_mode: &mut PendingRuntimeMode,
 ) -> Option<RuntimeCommand> {
     loop {
         match command_rx.try_recv() {
@@ -393,7 +399,7 @@ fn next_runtime_command(
         }
 
         let _ = event_tx.send(RuntimeEvent::Pending);
-        match pending_mode {
+        match *pending_mode {
             PendingRuntimeMode::Continue => return command_rx.recv().ok(),
             PendingRuntimeMode::PauseUntilResumed => match control_rx.recv().ok()? {
                 RuntimeControlCommand::Resume => continue,

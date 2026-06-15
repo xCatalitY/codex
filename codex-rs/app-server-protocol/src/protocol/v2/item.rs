@@ -624,6 +624,14 @@ pub enum GuardianApprovalReviewAction {
         reason: Option<String>,
         permissions: RequestPermissionProfile,
     },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    Workflow {
+        workflow_name: String,
+        source_kind: String,
+        source_name: String,
+        metadata_name: String,
+    },
 }
 
 impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
@@ -682,6 +690,17 @@ impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
             } => Self::RequestPermissions {
                 reason,
                 permissions: permissions.into(),
+            },
+            CoreGuardianAssessmentAction::Workflow {
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
+            } => Self::Workflow {
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
             },
         }
     }
@@ -743,6 +762,17 @@ impl From<GuardianApprovalReviewAction> for CoreGuardianAssessmentAction {
             } => Self::RequestPermissions {
                 reason,
                 permissions: permissions.into(),
+            },
+            GuardianApprovalReviewAction::Workflow {
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
+            } => Self::Workflow {
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
             },
         }
     }
@@ -1205,6 +1235,50 @@ pub struct PlanDeltaNotification {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct WorkflowProgressNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub run_id: String,
+    pub cell_id: String,
+    pub event: String,
+    pub unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

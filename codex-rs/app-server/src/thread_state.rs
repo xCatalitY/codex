@@ -238,6 +238,7 @@ mod tests {
                     model: model.to_string(),
                     reasoning_effort: None,
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             },
             personality: None,

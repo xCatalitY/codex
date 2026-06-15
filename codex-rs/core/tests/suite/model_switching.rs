@@ -60,6 +60,7 @@ fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -
                     model,
                     reasoning_effort: test.config.model_reasoning_effort.clone(),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

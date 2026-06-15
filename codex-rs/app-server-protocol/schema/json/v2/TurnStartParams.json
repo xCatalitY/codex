@@ -298,6 +298,16 @@
               "type": "null"
             }
           ]
+        },
+        "workflow_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkflowMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -484,6 +494,15 @@
           "type": "object"
         }
       ]
+    },
+    "WorkflowMode": {
+      "description": "Workflow overlay for a collaboration mode.",
+      "enum": [
+        "disabled",
+        "dynamic",
+        "ultracode"
+      ],
+      "type": "string"
     }
   },
   "properties": {

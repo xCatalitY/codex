@@ -90,6 +90,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
@@ -312,6 +313,10 @@ use crate::stream_events_utils::HandleOutputCtx;
 #[cfg(test)]
 use crate::stream_events_utils::handle_output_item_done;
 use crate::tasks::ReviewTask;
+use crate::tools::code_mode::WorkflowAgentTranscriptEnvelope;
+use crate::tools::code_mode::WorkflowAgentTranscriptTarget;
+use crate::tools::code_mode::append_workflow_agent_transcript_lines_to_target;
+use crate::tools::handlers::multi_agents_v2::wait::workflow_agent_live_transcript_entries_from_response_item;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
@@ -323,6 +328,7 @@ use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core_plugins::PluginsManager;
+use codex_git_utils::current_branch_name;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
 use codex_mcp::effective_mcp_servers_from_configured;
@@ -600,6 +606,8 @@ impl Codex {
                 model: model.clone(),
                 reasoning_effort: config.model_reasoning_effort.clone(),
                 developer_instructions: None,
+                workflow_mode: (config.workflows.mode != WorkflowMode::Disabled)
+                    .then_some(config.workflows.mode),
             },
         };
         let service_tier = get_service_tier(
@@ -1768,6 +1776,9 @@ impl Session {
             status,
         )
         .await;
+        self.services
+            .agent_control
+            .cleanup_completed_workflow_worktree(self.thread_id);
     }
 
     /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
@@ -2658,7 +2669,78 @@ impl Session {
             state.record_items(items.iter(), turn_context.truncation_policy);
         }
         self.persist_rollout_response_items(items).await;
+        Box::pin(self.maybe_record_workflow_agent_transcript_items(turn_context, items)).await;
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    async fn maybe_record_workflow_agent_transcript_items(
+        &self,
+        turn_context: &TurnContext,
+        items: &[ResponseItem],
+    ) {
+        let Some(metadata) = self
+            .services
+            .agent_control
+            .get_agent_metadata(self.thread_id)
+        else {
+            return;
+        };
+        let Some(transcript_path) = metadata.workflow_transcript_path else {
+            return;
+        };
+        let lines = items
+            .iter()
+            .flat_map(workflow_agent_live_transcript_entries_from_response_item)
+            .filter_map(|entry| serde_json::to_string(&entry).ok())
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            return;
+        }
+        let cwd_path = turn_context
+            .environments
+            .single_local_environment_cwd()
+            .map(|cwd| cwd.as_path().to_path_buf())
+            .unwrap_or_else(|| {
+                #[allow(deprecated)]
+                {
+                    turn_context.cwd.as_path().to_path_buf()
+                }
+            });
+        let cwd = cwd_path.to_string_lossy().into_owned();
+        let git_branch = current_branch_name(cwd_path.as_path()).await;
+        let target = WorkflowAgentTranscriptTarget {
+            transcript_path,
+            mirror_transcript_path: metadata.workflow_transcript_mirror_path,
+            envelope: WorkflowAgentTranscriptEnvelope {
+                agent_id: metadata.agent_path.as_ref().map(ToString::to_string),
+                agent_name: metadata.agent_path.as_ref().map(ToString::to_string),
+                session_kind: Some("workflow_agent".to_string()),
+                session_id: Some(self.session_id().to_string()),
+                thread_id: Some(self.thread_id.to_string()),
+                parent_thread_id: turn_context
+                    .session_source
+                    .parent_thread_id()
+                    .map(|id| id.to_string())
+                    .or_else(|| Some(self.thread_id.to_string())),
+                run_id: None,
+                cell_id: None,
+                workflow_tool_call_id: None,
+                cwd: Some(cwd),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                git_branch,
+            },
+        };
+        if let Err(err) = Box::pin(append_workflow_agent_transcript_lines_to_target(
+            &target, &lines,
+        ))
+        .await
+        {
+            warn!(
+                error = %err,
+                thread_id = %self.thread_id,
+                "failed to append live workflow agent transcript"
+            );
+        }
     }
 
     async fn maybe_warn_on_server_model_mismatch(

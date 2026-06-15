@@ -770,6 +770,7 @@ async fn run_review_on_session(
                         model: params.model.clone(),
                         reasoning_effort: params.reasoning_effort.clone(),
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

@@ -28,6 +28,7 @@ fn thread_settings_for_test(
                     model: model.to_string(),
                     reasoning_effort: Some(ReasoningEffortConfig::High),
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             },
             personality: Some(Personality::Pragmatic),
@@ -187,6 +188,331 @@ async fn thread_settings_updated_preserves_default_settings_for_plan_mode() {
         chat.current_reasoning_effort(),
         Some(ReasoningEffortConfig::Low)
     );
+}
+
+#[tokio::test]
+async fn workflow_progress_updates_status_during_active_turn() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: AppServerTurn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::InProgress,
+                error: None,
+                started_at: Some(0),
+                completed_at: None,
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "phase".to_string(),
+                unix_ms: 1_781_432_000_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: Some("build".to_string()),
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: Some("build artifacts".to_string()),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow: build");
+    assert_eq!(status.details(), Some("release - build artifacts"));
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "child_complete".to_string(),
+                unix_ms: 1_781_432_003_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: Some("smoke".to_string()),
+                child_index: Some(2),
+                child_run_id: Some("smoke#2".to_string()),
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Child workflow complete");
+    assert_eq!(
+        status.details(),
+        Some("release - child smoke - run smoke#2")
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "pipeline_failed".to_string(),
+                unix_ms: 1_781_432_005_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: Some(3),
+                stage_index: Some(2),
+                step_index: None,
+                error: Some("stage failed".to_string()),
+                message: Some("item 3 stage 2: stage failed".to_string()),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow pipeline failed");
+    assert_eq!(
+        status.details(),
+        Some("release - item 3 - stage 2 - item 3 stage 2: stage failed")
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "workflow_cancelled".to_string(),
+                unix_ms: 1_781_432_006_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow cancelled");
+    assert_eq!(status.details(), Some("release"));
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "workflow_paused".to_string(),
+                unix_ms: 1_781_432_007_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow paused");
+    assert_eq!(status.details(), Some("release"));
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "workflow_continued".to_string(),
+                unix_ms: 1_781_432_008_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow continued");
+    assert_eq!(status.details(), Some("release"));
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "workflow_completed".to_string(),
+                unix_ms: 1_781_432_009_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.header(), "Workflow complete");
+    assert_eq!(status.details(), Some("release"));
+
+    chat.handle_server_notification(
+        ServerNotification::WorkflowProgress(
+            codex_app_server_protocol::WorkflowProgressNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                run_id: "wf_release".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "agent_stalled".to_string(),
+                unix_ms: 1_781_432_010_000,
+                session_id: None,
+                workflow_tool_call_id: None,
+                cwd: None,
+                git_branch: None,
+                workflow: Some("release".to_string()),
+                phase: Some("build".to_string()),
+                agent: Some("builder".to_string()),
+                agent_id: Some("/root/builder".to_string()),
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: Some("retrying soon".to_string()),
+            },
+        ),
+        Some(ReplayKind::ResumeInitialMessages),
+    );
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should remain visible");
+    assert_eq!(status.header(), "Workflow complete");
+    assert_eq!(status.details(), Some("release"));
 }
 
 #[tokio::test]

@@ -428,6 +428,107 @@ pub(crate) async fn run_post_compact_hooks(
     }
 }
 
+pub(crate) async fn run_workflow_task_created_hooks(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    workflow_name: &str,
+    run_id: &str,
+    cell_id: Option<&str>,
+    description: Option<&str>,
+) {
+    let request = codex_hooks::TaskCreatedRequest {
+        session_id: sess.session_id().into(),
+        turn_id: turn_context.sub_id.clone(),
+        subagent: thread_spawn_subagent_hook_context(sess, turn_context),
+        #[allow(deprecated)]
+        cwd: turn_context.cwd.clone(),
+        transcript_path: sess.hook_transcript_path().await,
+        model: turn_context.model_info.slug.clone(),
+        permission_mode: hook_permission_mode(turn_context),
+        workflow_name: workflow_name.to_string(),
+        task_id: run_id.to_string(),
+        task_subject: workflow_name.to_string(),
+        task_description: description.map(ToString::to_string),
+        cell_id: cell_id.map(ToString::to_string),
+    };
+    let hooks = sess.hooks();
+    emit_hook_started_events(sess, turn_context, hooks.preview_task_created(&request)).await;
+
+    let outcome = hooks.run_task_created(request).await;
+    emit_hook_completed_events(sess, turn_context, outcome.hook_events).await;
+}
+
+pub(crate) async fn run_workflow_task_completed_hooks(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    workflow_name: &str,
+    run_id: &str,
+    cell_id: Option<&str>,
+    status: &str,
+    description: Option<&str>,
+) {
+    let request = codex_hooks::TaskCompletedRequest {
+        session_id: sess.session_id().into(),
+        turn_id: turn_context.sub_id.clone(),
+        subagent: thread_spawn_subagent_hook_context(sess, turn_context),
+        #[allow(deprecated)]
+        cwd: turn_context.cwd.clone(),
+        transcript_path: sess.hook_transcript_path().await,
+        model: turn_context.model_info.slug.clone(),
+        permission_mode: hook_permission_mode(turn_context),
+        workflow_name: workflow_name.to_string(),
+        task_id: run_id.to_string(),
+        task_subject: workflow_name.to_string(),
+        task_description: description.map(ToString::to_string),
+        cell_id: cell_id.map(ToString::to_string),
+        status: status.to_string(),
+    };
+    let hooks = sess.hooks();
+    emit_hook_started_events(sess, turn_context, hooks.preview_task_completed(&request)).await;
+
+    let outcome = hooks.run_task_completed(request).await;
+    emit_hook_completed_events(sess, turn_context, outcome.hook_events).await;
+}
+
+pub(crate) async fn run_workflow_notification_hooks(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    update: &crate::tools::code_mode::WorkflowProgressUpdate,
+) {
+    let request = codex_hooks::NotificationRequest {
+        session_id: sess.session_id().into(),
+        turn_id: turn_context.sub_id.clone(),
+        subagent: thread_spawn_subagent_hook_context(sess, turn_context),
+        #[allow(deprecated)]
+        cwd: turn_context.cwd.clone(),
+        transcript_path: sess.hook_transcript_path().await,
+        model: turn_context.model_info.slug.clone(),
+        permission_mode: hook_permission_mode(turn_context),
+        run_id: update.run_id.clone(),
+        cell_id: update.cell_id.clone(),
+        event: update.event.clone(),
+        unix_ms: update.unix_ms,
+        workflow: update.workflow.clone(),
+        phase: update.phase.clone(),
+        agent: update.agent.clone(),
+        agent_id: update.agent_id.clone(),
+        child: update.child.clone(),
+        child_index: update.child_index,
+        child_run_id: update.child_run_id.clone(),
+        item_index: update.item_index,
+        stage_index: update.stage_index,
+        step_index: update.step_index,
+        error: update.error.clone(),
+        message: update.message.clone(),
+        data: None,
+    };
+    let hooks = sess.hooks();
+    emit_hook_started_events(sess, turn_context, hooks.preview_notification(&request)).await;
+
+    let outcome = hooks.run_notification(request).await;
+    emit_hook_completed_events(sess, turn_context, outcome.hook_events).await;
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn run_legacy_after_agent_hook(
     sess: &Arc<Session>,
@@ -696,6 +797,9 @@ fn hook_run_metric_tags(run: &HookRunSummary) -> [(&'static str, &'static str); 
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
         HookEventName::SubagentStart => "SubagentStart",
         HookEventName::SubagentStop => "SubagentStop",
+        HookEventName::TaskCreated => "TaskCreated",
+        HookEventName::TaskCompleted => "TaskCompleted",
+        HookEventName::Notification => "Notification",
         HookEventName::Stop => "Stop",
     };
     let hook_source = match run.source {

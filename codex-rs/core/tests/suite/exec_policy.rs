@@ -32,6 +32,7 @@ fn collaboration_mode_for_model(model: String) -> CollaborationMode {
             model,
             reasoning_effort: None,
             developer_instructions: Some("exercise approvals in collaboration mode".to_string()),
+            workflow_mode: None,
         },
     }
 }
@@ -67,6 +68,7 @@ async fn submit_user_turn(
                             model: session_model,
                             reasoning_effort: None,
                             developer_instructions: None,
+                            workflow_mode: None,
                         },
                     })
                 }),
@@ -224,6 +226,7 @@ async fn execpolicy_blocks_shell_invocation() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

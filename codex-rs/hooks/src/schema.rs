@@ -25,6 +25,12 @@ const PRE_TOOL_USE_INPUT_FIXTURE: &str = "pre-tool-use.command.input.schema.json
 const PRE_TOOL_USE_OUTPUT_FIXTURE: &str = "pre-tool-use.command.output.schema.json";
 const PRE_COMPACT_INPUT_FIXTURE: &str = "pre-compact.command.input.schema.json";
 const PRE_COMPACT_OUTPUT_FIXTURE: &str = "pre-compact.command.output.schema.json";
+const TASK_CREATED_INPUT_FIXTURE: &str = "task-created.command.input.schema.json";
+const TASK_CREATED_OUTPUT_FIXTURE: &str = "task-created.command.output.schema.json";
+const TASK_COMPLETED_INPUT_FIXTURE: &str = "task-completed.command.input.schema.json";
+const TASK_COMPLETED_OUTPUT_FIXTURE: &str = "task-completed.command.output.schema.json";
+const NOTIFICATION_INPUT_FIXTURE: &str = "notification.command.input.schema.json";
+const NOTIFICATION_OUTPUT_FIXTURE: &str = "notification.command.output.schema.json";
 const SESSION_START_INPUT_FIXTURE: &str = "session-start.command.input.schema.json";
 const SESSION_START_OUTPUT_FIXTURE: &str = "session-start.command.output.schema.json";
 const USER_PROMPT_SUBMIT_INPUT_FIXTURE: &str = "user-prompt-submit.command.input.schema.json";
@@ -115,6 +121,12 @@ pub(crate) enum HookEventNameWire {
     SubagentStart,
     #[serde(rename = "SubagentStop")]
     SubagentStop,
+    #[serde(rename = "TaskCreated")]
+    TaskCreated,
+    #[serde(rename = "TaskCompleted")]
+    TaskCompleted,
+    #[serde(rename = "Notification")]
+    Notification,
     #[serde(rename = "Stop")]
     Stop,
 }
@@ -174,6 +186,33 @@ pub(crate) struct PreCompactCommandOutputWire {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "post-compact.command.output")]
 pub(crate) struct PostCompactCommandOutputWire {
+    #[serde(flatten)]
+    pub universal: HookUniversalOutputWire,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "task-created.command.output")]
+pub(crate) struct TaskCreatedCommandOutputWire {
+    #[serde(flatten)]
+    pub universal: HookUniversalOutputWire,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "task-completed.command.output")]
+pub(crate) struct TaskCompletedCommandOutputWire {
+    #[serde(flatten)]
+    pub universal: HookUniversalOutputWire,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "notification.command.output")]
+pub(crate) struct NotificationCommandOutputWire {
     #[serde(flatten)]
     pub universal: HookUniversalOutputWire,
 }
@@ -374,6 +413,114 @@ pub(crate) struct PostCompactCommandInput {
     pub model: String,
     #[schemars(schema_with = "compaction_trigger_schema")]
     pub trigger: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "task-created.command.input")]
+pub(crate) struct TaskCreatedCommandInput {
+    pub session_id: String,
+    /// Codex extension: expose the active turn id to internal turn-scoped hooks.
+    pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    pub transcript_path: NullableString,
+    pub cwd: String,
+    #[schemars(schema_with = "task_created_hook_event_name_schema")]
+    pub hook_event_name: String,
+    pub model: String,
+    #[schemars(schema_with = "permission_mode_schema")]
+    pub permission_mode: String,
+    pub workflow_name: String,
+    pub task_id: String,
+    pub task_subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "task-completed.command.input")]
+pub(crate) struct TaskCompletedCommandInput {
+    pub session_id: String,
+    /// Codex extension: expose the active turn id to internal turn-scoped hooks.
+    pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    pub transcript_path: NullableString,
+    pub cwd: String,
+    #[schemars(schema_with = "task_completed_hook_event_name_schema")]
+    pub hook_event_name: String,
+    pub model: String,
+    #[schemars(schema_with = "permission_mode_schema")]
+    pub permission_mode: String,
+    pub workflow_name: String,
+    pub task_id: String,
+    pub task_subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "notification.command.input")]
+pub(crate) struct NotificationCommandInput {
+    pub session_id: String,
+    /// Codex extension: expose the active turn id to internal turn-scoped hooks.
+    pub turn_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    pub transcript_path: NullableString,
+    pub cwd: String,
+    #[schemars(schema_with = "notification_hook_event_name_schema")]
+    pub hook_event_name: String,
+    pub model: String,
+    #[schemars(schema_with = "permission_mode_schema")]
+    pub permission_mode: String,
+    #[schemars(schema_with = "workflow_progress_notification_type_schema")]
+    pub notification_type: String,
+    pub run_id: String,
+    pub cell_id: String,
+    pub event: String,
+    pub unix_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "workflow_agent_id")]
+    pub agent_id_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -631,6 +778,30 @@ pub fn write_schema_fixtures(schema_root: &Path) -> anyhow::Result<()> {
         schema_json::<PreCompactCommandOutputWire>()?,
     )?;
     write_schema(
+        &generated_dir.join(TASK_CREATED_INPUT_FIXTURE),
+        schema_json::<TaskCreatedCommandInput>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(TASK_CREATED_OUTPUT_FIXTURE),
+        schema_json::<TaskCreatedCommandOutputWire>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(TASK_COMPLETED_INPUT_FIXTURE),
+        schema_json::<TaskCompletedCommandInput>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(TASK_COMPLETED_OUTPUT_FIXTURE),
+        schema_json::<TaskCompletedCommandOutputWire>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(NOTIFICATION_INPUT_FIXTURE),
+        schema_json::<NotificationCommandInput>()?,
+    )?;
+    write_schema(
+        &generated_dir.join(NOTIFICATION_OUTPUT_FIXTURE),
+        schema_json::<NotificationCommandOutputWire>()?,
+    )?;
+    write_schema(
         &generated_dir.join(PRE_TOOL_USE_INPUT_FIXTURE),
         schema_json::<PreToolUseCommandInput>()?,
     )?;
@@ -749,6 +920,18 @@ fn post_compact_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_const_schema("PostCompact")
 }
 
+fn task_created_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
+    string_const_schema("TaskCreated")
+}
+
+fn task_completed_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
+    string_const_schema("TaskCompleted")
+}
+
+fn notification_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
+    string_const_schema("Notification")
+}
+
 fn pre_tool_use_hook_event_name_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_const_schema("PreToolUse")
 }
@@ -791,6 +974,10 @@ fn compaction_trigger_schema(_gen: &mut SchemaGenerator) -> Schema {
     string_enum_schema(&["manual", "auto"])
 }
 
+fn workflow_progress_notification_type_schema(_gen: &mut SchemaGenerator) -> Schema {
+    string_const_schema("workflow_progress")
+}
+
 fn string_const_schema(value: &str) -> Schema {
     let mut schema = SchemaObject {
         instance_type: Some(InstanceType::String.into()),
@@ -820,6 +1007,9 @@ fn default_continue() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::NOTIFICATION_INPUT_FIXTURE;
+    use super::NOTIFICATION_OUTPUT_FIXTURE;
+    use super::NotificationCommandInput;
     use super::NullableString;
     use super::PERMISSION_REQUEST_INPUT_FIXTURE;
     use super::PERMISSION_REQUEST_OUTPUT_FIXTURE;
@@ -853,6 +1043,12 @@ mod tests {
     use super::SubagentStartCommandInput;
     use super::SubagentStartCommandOutputWire;
     use super::SubagentStopCommandInput;
+    use super::TASK_COMPLETED_INPUT_FIXTURE;
+    use super::TASK_COMPLETED_OUTPUT_FIXTURE;
+    use super::TASK_CREATED_INPUT_FIXTURE;
+    use super::TASK_CREATED_OUTPUT_FIXTURE;
+    use super::TaskCompletedCommandInput;
+    use super::TaskCreatedCommandInput;
     use super::USER_PROMPT_SUBMIT_INPUT_FIXTURE;
     use super::USER_PROMPT_SUBMIT_OUTPUT_FIXTURE;
     use super::UserPromptSubmitCommandInput;
@@ -891,6 +1087,24 @@ mod tests {
             }
             PRE_COMPACT_OUTPUT_FIXTURE => {
                 include_str!("../schema/generated/pre-compact.command.output.schema.json")
+            }
+            TASK_CREATED_INPUT_FIXTURE => {
+                include_str!("../schema/generated/task-created.command.input.schema.json")
+            }
+            TASK_CREATED_OUTPUT_FIXTURE => {
+                include_str!("../schema/generated/task-created.command.output.schema.json")
+            }
+            TASK_COMPLETED_INPUT_FIXTURE => {
+                include_str!("../schema/generated/task-completed.command.input.schema.json")
+            }
+            TASK_COMPLETED_OUTPUT_FIXTURE => {
+                include_str!("../schema/generated/task-completed.command.output.schema.json")
+            }
+            NOTIFICATION_INPUT_FIXTURE => {
+                include_str!("../schema/generated/notification.command.input.schema.json")
+            }
+            NOTIFICATION_OUTPUT_FIXTURE => {
+                include_str!("../schema/generated/notification.command.output.schema.json")
             }
             PRE_TOOL_USE_INPUT_FIXTURE => {
                 include_str!("../schema/generated/pre-tool-use.command.input.schema.json")
@@ -965,6 +1179,12 @@ mod tests {
             POST_COMPACT_OUTPUT_FIXTURE,
             PRE_COMPACT_INPUT_FIXTURE,
             PRE_COMPACT_OUTPUT_FIXTURE,
+            TASK_CREATED_INPUT_FIXTURE,
+            TASK_CREATED_OUTPUT_FIXTURE,
+            TASK_COMPLETED_INPUT_FIXTURE,
+            TASK_COMPLETED_OUTPUT_FIXTURE,
+            NOTIFICATION_INPUT_FIXTURE,
+            NOTIFICATION_OUTPUT_FIXTURE,
             PRE_TOOL_USE_INPUT_FIXTURE,
             PRE_TOOL_USE_OUTPUT_FIXTURE,
             SESSION_START_INPUT_FIXTURE,
@@ -1040,6 +1260,20 @@ mod tests {
                 .expect("serialize permission request input schema"),
         )
         .expect("parse permission request input schema");
+        let task_created: Value = serde_json::from_slice(
+            &schema_json::<TaskCreatedCommandInput>().expect("serialize task created input schema"),
+        )
+        .expect("parse task created input schema");
+        let task_completed: Value = serde_json::from_slice(
+            &schema_json::<TaskCompletedCommandInput>()
+                .expect("serialize task completed input schema"),
+        )
+        .expect("parse task completed input schema");
+        let notification: Value = serde_json::from_slice(
+            &schema_json::<NotificationCommandInput>()
+                .expect("serialize notification input schema"),
+        )
+        .expect("parse notification input schema");
         let user_prompt_submit: Value = serde_json::from_slice(
             &schema_json::<UserPromptSubmitCommandInput>()
                 .expect("serialize user prompt submit input schema"),
@@ -1069,6 +1303,9 @@ mod tests {
             &user_prompt_submit,
             &subagent_start,
             &subagent_stop,
+            &task_created,
+            &task_completed,
+            &notification,
             &stop,
         ] {
             assert_eq!(schema["properties"]["turn_id"]["type"], "string");
@@ -1090,6 +1327,10 @@ mod tests {
             schema_json::<PostToolUseCommandInput>().expect("serialize post tool use input schema"),
             schema_json::<PreCompactCommandInput>().expect("serialize pre compact input schema"),
             schema_json::<PostCompactCommandInput>().expect("serialize post compact input schema"),
+            schema_json::<TaskCreatedCommandInput>().expect("serialize task created input schema"),
+            schema_json::<TaskCompletedCommandInput>()
+                .expect("serialize task completed input schema"),
+            schema_json::<NotificationCommandInput>().expect("serialize notification input schema"),
             schema_json::<UserPromptSubmitCommandInput>()
                 .expect("serialize user prompt submit input schema"),
         ];
@@ -1162,5 +1403,91 @@ mod tests {
         let root_input = serde_json::to_value(root_input).expect("serialize root hook input");
         assert_eq!(root_input.get("agent_id"), None);
         assert_eq!(root_input.get("agent_type"), None);
+    }
+
+    #[test]
+    fn workflow_hook_inputs_serialize_expected_event_payloads() {
+        let task_created = TaskCreatedCommandInput {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            agent_id: None,
+            agent_type: None,
+            transcript_path: NullableString::from_path(/*path*/ None),
+            cwd: "/tmp".to_string(),
+            hook_event_name: "TaskCreated".to_string(),
+            model: "gpt-test".to_string(),
+            permission_mode: "default".to_string(),
+            workflow_name: "release".to_string(),
+            task_id: "run-1".to_string(),
+            task_subject: "release".to_string(),
+            task_description: None,
+            cell_id: None,
+        };
+        assert_eq!(
+            serde_json::to_value(task_created).expect("serialize task created input"),
+            json!({
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "transcript_path": null,
+                "cwd": "/tmp",
+                "hook_event_name": "TaskCreated",
+                "model": "gpt-test",
+                "permission_mode": "default",
+                "workflow_name": "release",
+                "task_id": "run-1",
+                "task_subject": "release",
+            })
+        );
+
+        let notification = NotificationCommandInput {
+            session_id: "session-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            agent_id: None,
+            agent_type: None,
+            transcript_path: NullableString::from_path(/*path*/ None),
+            cwd: "/tmp".to_string(),
+            hook_event_name: "Notification".to_string(),
+            model: "gpt-test".to_string(),
+            permission_mode: "default".to_string(),
+            notification_type: "workflow_progress".to_string(),
+            run_id: "run-1".to_string(),
+            cell_id: "cell-1".to_string(),
+            event: "workflow_complete".to_string(),
+            unix_ms: 123,
+            workflow: Some("release".to_string()),
+            phase: None,
+            agent: None,
+            agent_id_value: Some("agent-1".to_string()),
+            child: None,
+            child_index: None,
+            child_run_id: None,
+            item_index: None,
+            stage_index: None,
+            step_index: None,
+            error: None,
+            message: Some("done".to_string()),
+            data: Some(json!({ "agentCount": 1 })),
+        };
+        assert_eq!(
+            serde_json::to_value(notification).expect("serialize notification input"),
+            json!({
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "transcript_path": null,
+                "cwd": "/tmp",
+                "hook_event_name": "Notification",
+                "model": "gpt-test",
+                "permission_mode": "default",
+                "notification_type": "workflow_progress",
+                "run_id": "run-1",
+                "cell_id": "cell-1",
+                "event": "workflow_complete",
+                "unix_ms": 123,
+                "workflow": "release",
+                "workflow_agent_id": "agent-1",
+                "message": "done",
+                "data": { "agentCount": 1 },
+            })
+        );
     }
 }

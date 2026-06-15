@@ -138,7 +138,22 @@ pub trait CodeModeSession: Send + Sync {
         request: ExecuteRequest,
     ) -> CodeModeSessionResultFuture<'a, StartedCell>;
 
+    fn execute_to_pending<'a>(
+        &'a self,
+        request: ExecuteRequest,
+    ) -> CodeModeSessionResultFuture<'a, ExecuteToPendingOutcome>;
+
     fn wait<'a>(&'a self, request: WaitRequest) -> CodeModeSessionResultFuture<'a, WaitOutcome>;
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome>;
+
+    fn pause_to_pending<'a>(
+        &'a self,
+        cell_id: CellId,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome>;
 
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome>;
 
@@ -384,6 +399,32 @@ impl CodeModeService {
         }
     }
 
+    pub async fn pause_to_pending(&self, cell_id: CellId) -> Result<WaitToPendingOutcome, String> {
+        let handle = self.inner.cells.lock().await.get(&cell_id).cloned();
+        let Some(handle) = handle else {
+            return Ok(WaitToPendingOutcome::MissingCell(missing_cell_response(
+                cell_id,
+            )));
+        };
+        let (response_tx, response_rx) = oneshot::channel();
+        if handle
+            .control_tx
+            .send(CellControlCommand::PauseToPending { response_tx })
+            .is_err()
+        {
+            return Ok(WaitToPendingOutcome::MissingCell(missing_cell_response(
+                cell_id,
+            )));
+        }
+        match response_rx.await {
+            Ok(Ok(response)) => Ok(WaitToPendingOutcome::LiveCell(response)),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Ok(WaitToPendingOutcome::MissingCell(missing_cell_response(
+                cell_id,
+            ))),
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<(), String> {
         self.inner.shutting_down.store(true, Ordering::Release);
         let handles = self
@@ -443,6 +484,27 @@ impl CodeModeSession for CodeModeService {
         Box::pin(CodeModeService::wait(self, request))
     }
 
+    fn execute_to_pending<'a>(
+        &'a self,
+        request: ExecuteRequest,
+    ) -> CodeModeSessionResultFuture<'a, ExecuteToPendingOutcome> {
+        Box::pin(CodeModeService::execute_to_pending(self, request))
+    }
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(CodeModeService::wait_to_pending(self, request))
+    }
+
+    fn pause_to_pending<'a>(
+        &'a self,
+        cell_id: CellId,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(CodeModeService::pause_to_pending(self, cell_id))
+    }
+
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(CodeModeService::terminate(self, cell_id))
     }
@@ -460,6 +522,9 @@ enum CellControlCommand {
     PollToPending {
         response_tx: oneshot::Sender<ExecuteToPendingOutcome>,
     },
+    PauseToPending {
+        response_tx: oneshot::Sender<Result<ExecuteToPendingOutcome, String>>,
+    },
     Terminate {
         response_tx: oneshot::Sender<RuntimeResponse>,
     },
@@ -468,6 +533,7 @@ enum CellControlCommand {
 enum CellResponseSender {
     Runtime(oneshot::Sender<RuntimeResponse>),
     ExecuteToPending(oneshot::Sender<ExecuteToPendingOutcome>),
+    PauseToPending(oneshot::Sender<Result<ExecuteToPendingOutcome, String>>),
 }
 
 struct PendingResult {
@@ -508,6 +574,9 @@ fn send_terminal_response(response_tx: CellResponseSender, response: RuntimeResp
         CellResponseSender::ExecuteToPending(response_tx) => {
             let _ = response_tx.send(ExecuteToPendingOutcome::Completed(response));
         }
+        CellResponseSender::PauseToPending(response_tx) => {
+            let _ = response_tx.send(Ok(ExecuteToPendingOutcome::Completed(response)));
+        }
     }
 }
 
@@ -545,6 +614,9 @@ fn send_yield_response(
         CellResponseSender::ExecuteToPending(execute_to_pending_tx) => {
             *response_tx = Some(CellResponseSender::ExecuteToPending(execute_to_pending_tx));
         }
+        CellResponseSender::PauseToPending(pause_to_pending_tx) => {
+            *response_tx = Some(CellResponseSender::PauseToPending(pause_to_pending_tx));
+        }
     }
 }
 
@@ -570,6 +642,7 @@ async fn run_cell_control(
     let mut response_tx = Some(initial_response_tx);
     let mut termination_requested = false;
     let mut runtime_closed = false;
+    let mut runtime_paused = false;
     let mut yield_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut notification_tasks = JoinSet::new();
 
@@ -631,6 +704,17 @@ async fn run_cell_control(
                                             &mut pending_tool_call_ids,
                                         ),
                                     });
+                                    runtime_paused = true;
+                                }
+                                CellResponseSender::PauseToPending(response_tx) => {
+                                    let _ = response_tx.send(Ok(ExecuteToPendingOutcome::Pending {
+                                        cell_id: cell_id.clone(),
+                                        content_items: std::mem::take(&mut content_items),
+                                        pending_tool_call_ids: std::mem::take(
+                                            &mut pending_tool_call_ids,
+                                        ),
+                                    }));
+                                    runtime_paused = true;
                                 }
                             }
                         }
@@ -753,7 +837,11 @@ async fn run_cell_control(
                         }
                         response_tx = Some(CellResponseSender::Runtime(next_response_tx));
                         yield_timer = Some(Box::pin(tokio::time::sleep(Duration::from_millis(yield_time_ms))));
-                        resume_paused_runtime(&runtime_control_tx, pending_mode);
+                        resume_paused_runtime(
+                            &runtime_control_tx,
+                            pending_mode,
+                            &mut runtime_paused,
+                        );
                     }
                     CellControlCommand::PollToPending {
                         response_tx: next_response_tx,
@@ -767,7 +855,41 @@ async fn run_cell_control(
                         response_tx =
                             Some(CellResponseSender::ExecuteToPending(next_response_tx));
                         yield_timer = None;
-                        resume_paused_runtime(&runtime_control_tx, pending_mode);
+                        resume_paused_runtime(
+                            &runtime_control_tx,
+                            pending_mode,
+                            &mut runtime_paused,
+                        );
+                    }
+                    CellControlCommand::PauseToPending {
+                        response_tx: next_response_tx,
+                    } => {
+                        if let Some(result) = pending_result.take() {
+                            let response = pending_result_response(&cell_id, result);
+                            let _ = next_response_tx
+                                .send(Ok(ExecuteToPendingOutcome::Completed(response)));
+                            break;
+                        }
+                        if let Some(current_response_tx) = response_tx.take() {
+                            match current_response_tx {
+                                CellResponseSender::Runtime(runtime_response_tx) => {
+                                    let _ = runtime_response_tx.send(RuntimeResponse::Yielded {
+                                        cell_id: cell_id.clone(),
+                                        content_items: std::mem::take(&mut content_items),
+                                    });
+                                }
+                                other_response_tx => {
+                                    response_tx = Some(other_response_tx);
+                                    let _ = next_response_tx.send(Err(format!(
+                                        "exec cell {cell_id} already has an active wait"
+                                    )));
+                                    continue;
+                                }
+                            }
+                        }
+                        response_tx = Some(CellResponseSender::PauseToPending(next_response_tx));
+                        yield_timer = None;
+                        let _ = runtime_tx.send(RuntimeCommand::PauseUntilResumed);
                     }
                     CellControlCommand::Terminate { response_tx: next_response_tx } => {
                         if let Some(result) = pending_result.take() {
@@ -780,7 +902,11 @@ async fn run_cell_control(
                         cancellation_token.cancel();
                         yield_timer = None;
                         let _ = runtime_tx.send(RuntimeCommand::Terminate);
-                        terminate_paused_runtime(&runtime_control_tx, pending_mode);
+                        terminate_paused_runtime(
+                            &runtime_control_tx,
+                            pending_mode,
+                            runtime_paused,
+                        );
                         let _ = runtime_terminate_handle.terminate_execution();
                         if runtime_closed {
                             if let Some(response_tx) = response_tx.take() {
@@ -813,7 +939,7 @@ async fn run_cell_control(
     let _ = runtime_tx.send(RuntimeCommand::Terminate);
     cancellation_token.cancel();
     drain_notification_tasks(&mut notification_tasks).await;
-    terminate_paused_runtime(&runtime_control_tx, pending_mode);
+    terminate_paused_runtime(&runtime_control_tx, pending_mode, runtime_paused);
     inner.cells.lock().await.remove(&cell_id);
     inner.delegate.cell_closed(&cell_id);
 }
@@ -831,17 +957,20 @@ async fn drain_notification_tasks(notification_tasks: &mut JoinSet<()>) {
 fn resume_paused_runtime(
     runtime_control_tx: &std::sync::mpsc::Sender<RuntimeControlCommand>,
     pending_mode: PendingRuntimeMode,
+    runtime_paused: &mut bool,
 ) {
-    if pending_mode == PendingRuntimeMode::PauseUntilResumed {
+    if pending_mode == PendingRuntimeMode::PauseUntilResumed || *runtime_paused {
         let _ = runtime_control_tx.send(RuntimeControlCommand::Resume);
+        *runtime_paused = false;
     }
 }
 
 fn terminate_paused_runtime(
     runtime_control_tx: &std::sync::mpsc::Sender<RuntimeControlCommand>,
     pending_mode: PendingRuntimeMode,
+    runtime_paused: bool,
 ) {
-    if pending_mode == PendingRuntimeMode::PauseUntilResumed {
+    if pending_mode == PendingRuntimeMode::PauseUntilResumed || runtime_paused {
         let _ = runtime_control_tx.send(RuntimeControlCommand::Terminate);
     }
 }
@@ -1377,6 +1506,112 @@ text("done");
                     error_text: None,
                 }
             ))
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_to_pending_pauses_continue_mode_cell_after_yield() {
+        let service = CodeModeService::new();
+
+        let started_cell = service
+            .execute(ExecuteRequest {
+                source: r#"
+text("ready");
+yield_control();
+await new Promise(() => {});
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+        let live_cell_id = started_cell.cell_id.clone();
+
+        assert_eq!(
+            started_cell.initial_response().await.unwrap(),
+            RuntimeResponse::Yielded {
+                cell_id: cell_id("1"),
+                content_items: vec![FunctionCallOutputContentItem::InputText {
+                    text: "ready".to_string(),
+                }],
+            }
+        );
+
+        let pause_response = tokio::time::timeout(
+            Duration::from_secs(1),
+            service.pause_to_pending(live_cell_id.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            pause_response,
+            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+                pending_tool_call_ids: Vec::new(),
+            })
+        );
+
+        let termination = service.terminate(live_cell_id).await.unwrap();
+
+        assert_eq!(
+            termination,
+            WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_to_pending_preempts_active_runtime_wait() {
+        let service = CodeModeService::new();
+
+        let started_cell = service
+            .execute(ExecuteRequest {
+                source: r#"await new Promise(() => {});"#.to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+        let live_cell_id = started_cell.cell_id.clone();
+
+        let pause_response = tokio::time::timeout(
+            Duration::from_secs(1),
+            service.pause_to_pending(live_cell_id.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            started_cell.initial_response().await.unwrap(),
+            RuntimeResponse::Yielded {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+            }
+        );
+        assert_eq!(
+            pause_response,
+            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+                pending_tool_call_ids: Vec::new(),
+            })
+        );
+
+        let termination = service.terminate(live_cell_id).await.unwrap();
+
+        assert_eq!(
+            termination,
+            WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+            })
         );
     }
 

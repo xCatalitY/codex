@@ -18,9 +18,57 @@ pub(crate) struct ServiceTierCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkflowSlashCommand {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) input_schema: Option<String>,
+    pub(crate) source_label: Option<String>,
+}
+
+impl WorkflowSlashCommand {
+    pub(crate) fn invocation_prompt(&self, args: &str) -> String {
+        let args = args.trim();
+        let input_schema = self
+            .input_schema
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let mut prompt = if args.is_empty() {
+            format!(
+                "Run the saved workflow `{}` by calling the workflow tool with name `{}`.",
+                self.name, self.name
+            )
+        } else if let Ok(json_args) = serde_json::from_str::<serde_json::Value>(args) {
+            let formatted_args =
+                serde_json::to_string_pretty(&json_args).unwrap_or_else(|_| args.to_string());
+            format!(
+                "Run the saved workflow `{}` by calling the workflow tool with name `{}` and set `args` to this exact JSON value:\n\n{}",
+                self.name, self.name, formatted_args
+            )
+        } else if input_schema.is_some() {
+            format!(
+                "Run the saved workflow `{}` by calling the workflow tool with name `{}`. Interpret these user arguments according to the workflow input schema below and set `args` to the resulting JSON value:\n\n{}",
+                self.name, self.name, args
+            )
+        } else {
+            format!(
+                "Run the saved workflow `{}` by calling the workflow tool with name `{}` and pass these user arguments:\n\n{}",
+                self.name, self.name, args
+            )
+        };
+        if let Some(input_schema) = input_schema {
+            prompt.push_str("\n\nWorkflow input schema:\n");
+            prompt.push_str(input_schema);
+        }
+        prompt
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SlashCommandItem {
     Builtin(SlashCommand),
     ServiceTier(ServiceTierCommand),
+    Workflow(WorkflowSlashCommand),
 }
 
 impl SlashCommandItem {
@@ -28,6 +76,7 @@ impl SlashCommandItem {
         match self {
             Self::Builtin(cmd) => cmd.command(),
             Self::ServiceTier(command) => &command.name,
+            Self::Workflow(command) => &command.name,
         }
     }
 
@@ -35,6 +84,7 @@ impl SlashCommandItem {
         match self {
             Self::Builtin(cmd) => cmd.supports_inline_args(),
             Self::ServiceTier(_) => false,
+            Self::Workflow(_) => true,
         }
     }
 
@@ -42,6 +92,7 @@ impl SlashCommandItem {
         match self {
             Self::Builtin(cmd) => cmd.available_in_side_conversation(),
             Self::ServiceTier(_) => false,
+            Self::Workflow(_) => false,
         }
     }
 
@@ -49,6 +100,7 @@ impl SlashCommandItem {
         match self {
             Self::Builtin(cmd) => cmd.available_during_task(),
             Self::ServiceTier(_) => false,
+            Self::Workflow(_) => false,
         }
     }
 }
@@ -83,9 +135,18 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn commands_for_input(
     flags: BuiltinCommandFlags,
     service_tier_commands: &[ServiceTierCommand],
+) -> Vec<SlashCommandItem> {
+    commands_for_input_with_workflows(flags, service_tier_commands, &[])
+}
+
+pub(crate) fn commands_for_input_with_workflows(
+    flags: BuiltinCommandFlags,
+    service_tier_commands: &[ServiceTierCommand],
+    workflow_commands: &[WorkflowSlashCommand],
 ) -> Vec<SlashCommandItem> {
     let mut commands = Vec::new();
     let tiers_enabled = flags.service_tier_commands_enabled;
@@ -99,6 +160,15 @@ pub(crate) fn commands_for_input(
                     .map(SlashCommandItem::ServiceTier),
             );
         }
+    }
+    for workflow in workflow_commands {
+        if commands
+            .iter()
+            .any(|command| command.command() == workflow.name)
+        {
+            continue;
+        }
+        commands.push(SlashCommandItem::Workflow(workflow.clone()));
     }
     commands
         .into_iter()
@@ -121,33 +191,52 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
     .then_some(cmd)
 }
 
+#[cfg(test)]
 pub(crate) fn find_slash_command(
     name: &str,
     flags: BuiltinCommandFlags,
     service_tier_commands: &[ServiceTierCommand],
+) -> Option<SlashCommandItem> {
+    find_slash_command_with_workflows(name, flags, service_tier_commands, &[])
+}
+
+pub(crate) fn find_slash_command_with_workflows(
+    name: &str,
+    flags: BuiltinCommandFlags,
+    service_tier_commands: &[ServiceTierCommand],
+    workflow_commands: &[WorkflowSlashCommand],
 ) -> Option<SlashCommandItem> {
     if let Some(cmd) = find_builtin_command(name, flags) {
         return Some(SlashCommandItem::Builtin(cmd));
     }
 
     let tiers_enabled = flags.service_tier_commands_enabled;
-    tiers_enabled
+    if let Some(command) = tiers_enabled
         .then(|| {
             service_tier_commands
                 .iter()
                 .find(|command| command.name == name)
                 .cloned()
-                .map(SlashCommandItem::ServiceTier)
         })
         .flatten()
+    {
+        return Some(SlashCommandItem::ServiceTier(command));
+    }
+
+    workflow_commands
+        .iter()
+        .find(|command| command.name == name)
+        .cloned()
+        .map(SlashCommandItem::Workflow)
 }
 
-pub(crate) fn has_slash_command_prefix(
+pub(crate) fn has_slash_command_prefix_with_workflows(
     name: &str,
     flags: BuiltinCommandFlags,
     service_tier_commands: &[ServiceTierCommand],
+    workflow_commands: &[WorkflowSlashCommand],
 ) -> bool {
-    commands_for_input(flags, service_tier_commands)
+    commands_for_input_with_workflows(flags, service_tier_commands, workflow_commands)
         .into_iter()
         .any(|command| fuzzy_match(command.command(), name).is_some())
 }
@@ -184,6 +273,62 @@ mod tests {
         assert_eq!(
             find_builtin_command("clear", all_enabled_flags()),
             Some(SlashCommand::Clear)
+        );
+    }
+
+    #[test]
+    fn effort_and_workflow_commands_resolve_for_dispatch_and_popup() {
+        let flags = all_enabled_flags();
+
+        assert_eq!(
+            find_builtin_command("effort", flags),
+            Some(SlashCommand::Effort)
+        );
+        assert_eq!(
+            find_builtin_command("workflow", flags),
+            Some(SlashCommand::Workflow)
+        );
+        assert_eq!(
+            find_builtin_command("workflows", flags),
+            Some(SlashCommand::Workflows)
+        );
+
+        let commands = commands_for_input(flags, &[]);
+        assert!(commands.contains(&SlashCommandItem::Builtin(SlashCommand::Effort)));
+        assert!(commands.contains(&SlashCommandItem::Builtin(SlashCommand::Workflow)));
+        assert!(commands.contains(&SlashCommandItem::Builtin(SlashCommand::Workflows)));
+    }
+
+    #[test]
+    fn workflow_slash_commands_resolve_after_builtins() {
+        let flags = all_enabled_flags();
+        let workflows = vec![
+            WorkflowSlashCommand {
+                name: "release".to_string(),
+                description: "Release workflow".to_string(),
+                input_schema: None,
+                source_label: Some("[Workflow]".to_string()),
+            },
+            WorkflowSlashCommand {
+                name: "model".to_string(),
+                description: "Shadowed by builtin".to_string(),
+                input_schema: None,
+                source_label: Some("[Workflow]".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            find_slash_command_with_workflows("release", flags, &[], &workflows),
+            Some(SlashCommandItem::Workflow(WorkflowSlashCommand {
+                name: "release".to_string(),
+                description: "Release workflow".to_string(),
+                input_schema: None,
+                source_label: Some("[Workflow]".to_string()),
+            }))
+        );
+        assert_eq!(
+            find_slash_command_with_workflows("model", flags, &[], &workflows),
+            Some(SlashCommandItem::Builtin(SlashCommand::Model))
         );
     }
 

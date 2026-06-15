@@ -9,6 +9,8 @@ use codex_code_mode::NotificationFuture;
 use codex_code_mode::ToolInvocationFuture;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::WorkflowProgressEvent;
 use serde_json::Value as JsonValue;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -17,6 +19,9 @@ use tokio_util::sync::CancellationToken;
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::call_nested_tool;
+use super::update_workflow_snapshot_for_notify;
+use super::wait_handler::WorkflowProgressNotificationResult;
+use crate::hook_runtime::run_workflow_notification_hooks;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
@@ -295,6 +300,51 @@ impl CoreTurnHost {
     async fn notify(&self, call_id: String, cell_id: CellId, text: String) -> Result<(), String> {
         if text.trim().is_empty() {
             return Ok(());
+        }
+        match update_workflow_snapshot_for_notify(self.exec.turn.as_ref(), &cell_id, &text).await {
+            WorkflowProgressNotificationResult::Consumed { update } => {
+                if let Some(update) = update {
+                    let hook_update = update.clone();
+                    self.exec
+                        .session
+                        .send_event(
+                            self.exec.turn.as_ref(),
+                            EventMsg::WorkflowProgress(WorkflowProgressEvent {
+                                thread_id: self.exec.session.thread_id.to_string(),
+                                turn_id: self.exec.turn.sub_id.clone(),
+                                run_id: update.run_id,
+                                cell_id: update.cell_id,
+                                event: update.event,
+                                unix_ms: update.unix_ms,
+                                session_id: update.session_id,
+                                workflow_tool_call_id: update.workflow_tool_call_id,
+                                cwd: update.cwd,
+                                git_branch: update.git_branch,
+                                workflow: update.workflow,
+                                phase: update.phase,
+                                agent: update.agent,
+                                agent_id: update.agent_id,
+                                child: update.child,
+                                child_index: update.child_index,
+                                child_run_id: update.child_run_id,
+                                item_index: update.item_index,
+                                stage_index: update.stage_index,
+                                step_index: update.step_index,
+                                error: update.error,
+                                message: update.message,
+                            }),
+                        )
+                        .await;
+                    run_workflow_notification_hooks(
+                        &self.exec.session,
+                        &self.exec.turn,
+                        &hook_update,
+                    )
+                    .await;
+                }
+                return Ok(());
+            }
+            WorkflowProgressNotificationResult::NotWorkflowNotification => {}
         }
         self.exec
             .session

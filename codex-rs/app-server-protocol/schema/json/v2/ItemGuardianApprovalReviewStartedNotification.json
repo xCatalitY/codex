@@ -485,6 +485,38 @@
           ],
           "title": "RequestPermissionsGuardianApprovalReviewAction",
           "type": "object"
+        },
+        {
+          "properties": {
+            "metadataName": {
+              "type": "string"
+            },
+            "sourceKind": {
+              "type": "string"
+            },
+            "sourceName": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflow"
+              ],
+              "title": "WorkflowGuardianApprovalReviewActionType",
+              "type": "string"
+            },
+            "workflowName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "metadataName",
+            "sourceKind",
+            "sourceName",
+            "type",
+            "workflowName"
+          ],
+          "title": "WorkflowGuardianApprovalReviewAction",
+          "type": "object"
         }
       ]
     },

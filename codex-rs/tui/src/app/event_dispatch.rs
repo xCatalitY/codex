@@ -1383,11 +1383,16 @@ impl App {
             AppEvent::RefreshPluginMentions => {
                 self.refresh_plugin_mentions(app_server);
             }
-            AppEvent::PluginMentionsLoaded { mut plugins } => {
+            AppEvent::PluginMentionsLoaded {
+                mut plugins,
+                mut workflow_dirs,
+            } => {
                 if !self.config.features.enabled(Feature::Plugins) {
                     plugins = None;
+                    workflow_dirs = Vec::new();
                 }
-                self.chat_widget.on_plugin_mentions_loaded(plugins);
+                self.chat_widget
+                    .on_plugin_mentions_loaded(plugins, workflow_dirs);
             }
             AppEvent::PersistPersonalitySelection { personality } => {
                 match crate::config_update::write_config_batch(
@@ -1622,6 +1627,35 @@ impl App {
                     generate_memories,
                 )
                 .await;
+            }
+            AppEvent::UpdateWorkflowSettings {
+                enabled,
+                mode,
+                approval,
+                keyword_trigger_enabled,
+            } => {
+                self.update_workflow_settings(
+                    app_server,
+                    enabled,
+                    mode,
+                    approval,
+                    keyword_trigger_enabled,
+                )
+                .await;
+            }
+            AppEvent::UpdateNamedWorkflowApproval {
+                workflow_name,
+                approval,
+            } => {
+                self.update_named_workflow_approval(app_server, workflow_name, approval)
+                    .await;
+            }
+            AppEvent::UpdateNamedWorkflowEnabled {
+                workflow_name,
+                enabled,
+            } => {
+                self.update_named_workflow_enabled(app_server, workflow_name, enabled)
+                    .await;
             }
             AppEvent::ResetMemories => {
                 self.reset_memories_with_app_server(app_server).await;

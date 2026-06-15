@@ -125,6 +125,7 @@ async fn refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

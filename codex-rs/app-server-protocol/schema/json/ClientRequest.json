@@ -3059,6 +3059,16 @@
               "type": "null"
             }
           ]
+        },
+        "workflow_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkflowMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -4400,6 +4410,23 @@
         "mode"
       ],
       "type": "object"
+    },
+    "WorkflowAgentControlAction": {
+      "description": "Submission operation",
+      "enum": [
+        "skip",
+        "retry"
+      ],
+      "type": "string"
+    },
+    "WorkflowMode": {
+      "description": "Workflow overlay for a collaboration mode.",
+      "enum": [
+        "disabled",
+        "dynamic",
+        "ultracode"
+      ],
+      "type": "string"
     }
   },
   "description": "Request from the client to the server.",

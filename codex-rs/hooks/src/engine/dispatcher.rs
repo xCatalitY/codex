@@ -51,6 +51,9 @@ pub(crate) fn select_handlers_for_matcher_inputs(
             | HookEventName::SessionStart
             | HookEventName::SubagentStart
             | HookEventName::SubagentStop
+            | HookEventName::TaskCreated
+            | HookEventName::TaskCompleted
+            | HookEventName::Notification
             | HookEventName::PreCompact
             | HookEventName::PostCompact => {
                 if matcher_inputs.is_empty() {
@@ -149,6 +152,9 @@ fn scope_for_event(event_name: HookEventName) -> HookScope {
         | HookEventName::PostCompact
         | HookEventName::UserPromptSubmit
         | HookEventName::SubagentStop
+        | HookEventName::TaskCreated
+        | HookEventName::TaskCompleted
+        | HookEventName::Notification
         | HookEventName::Stop => HookScope::Turn,
     }
 }
@@ -252,6 +258,75 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].display_order, 0);
+    }
+
+    #[test]
+    fn workflow_task_hooks_match_workflow_name() {
+        let handlers = vec![
+            make_handler(
+                HookEventName::TaskCreated,
+                Some("^release$"),
+                "echo release",
+                /*display_order*/ 0,
+            ),
+            make_handler(
+                HookEventName::TaskCreated,
+                Some("^audit$"),
+                "echo audit",
+                /*display_order*/ 1,
+            ),
+            make_handler(
+                HookEventName::TaskCompleted,
+                Some("release|audit"),
+                "echo completed",
+                /*display_order*/ 2,
+            ),
+        ];
+
+        let created = select_handlers(&handlers, HookEventName::TaskCreated, Some("release"));
+        let completed = select_handlers(&handlers, HookEventName::TaskCompleted, Some("audit"));
+
+        assert_eq!(
+            created
+                .iter()
+                .map(|handler| handler.display_order)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(
+            completed
+                .iter()
+                .map(|handler| handler.display_order)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn workflow_notification_hooks_match_progress_event_name() {
+        let handlers = vec![
+            make_handler(
+                HookEventName::Notification,
+                Some("^workflow_complete$"),
+                "echo complete",
+                /*display_order*/ 0,
+            ),
+            make_handler(
+                HookEventName::Notification,
+                Some("^agent_.*"),
+                "echo agent",
+                /*display_order*/ 1,
+            ),
+        ];
+
+        let selected = select_handlers(
+            &handlers,
+            HookEventName::Notification,
+            Some("agent_complete"),
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].display_order, 1);
     }
 
     #[test]

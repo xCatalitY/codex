@@ -9,6 +9,7 @@ use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -440,6 +441,51 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
     .await;
     disabled.assert_visible_lacks(&["request_user_input"]);
     disabled.assert_registered_lacks(&["request_user_input"]);
+}
+
+#[tokio::test]
+async fn workflow_tool_requires_active_workflow_mode_and_enabled_config() {
+    let disabled_mode = probe(|_| {}).await;
+    disabled_mode.assert_visible_lacks(&["workflow"]);
+    disabled_mode.assert_registered_lacks(&["workflow"]);
+
+    let active_mode = probe(|turn| {
+        turn.collaboration_mode = turn
+            .collaboration_mode
+            .with_workflow_mode(WorkflowMode::Dynamic);
+    })
+    .await;
+    active_mode.assert_visible_contains(&["workflow"]);
+    active_mode.assert_registered_contains(&["workflow"]);
+
+    let disabled_config = probe(|turn| {
+        turn.collaboration_mode = turn
+            .collaboration_mode
+            .with_workflow_mode(WorkflowMode::Dynamic);
+        update_config(turn, |config| {
+            config.workflows.enabled = false;
+        });
+    })
+    .await;
+    disabled_config.assert_visible_lacks(&["workflow"]);
+    disabled_config.assert_registered_lacks(&["workflow"]);
+}
+
+#[tokio::test]
+async fn workflow_control_tool_is_dispatch_only() {
+    let active_mode = probe(|turn| {
+        turn.collaboration_mode = turn
+            .collaboration_mode
+            .with_workflow_mode(WorkflowMode::Dynamic);
+    })
+    .await;
+
+    active_mode.assert_visible_lacks(&["workflow_control"]);
+    active_mode.assert_registered_contains(&["workflow_control"]);
+    assert_eq!(
+        active_mode.exposure("workflow_control"),
+        ToolExposure::Hidden
+    );
 }
 
 #[tokio::test]

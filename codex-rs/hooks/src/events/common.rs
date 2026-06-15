@@ -113,6 +113,9 @@ pub(crate) fn matcher_pattern_for_event(
         | HookEventName::SessionStart
         | HookEventName::SubagentStart
         | HookEventName::SubagentStop
+        | HookEventName::TaskCreated
+        | HookEventName::TaskCompleted
+        | HookEventName::Notification
         | HookEventName::PreCompact
         | HookEventName::PostCompact => matcher,
         HookEventName::UserPromptSubmit | HookEventName::Stop => None,
@@ -277,6 +280,18 @@ mod tests {
         assert_eq!(
             matcher_pattern_for_event(HookEventName::SessionStart, Some("startup|resume")),
             Some("startup|resume")
+        );
+        assert_eq!(
+            matcher_pattern_for_event(HookEventName::TaskCreated, Some("^release$")),
+            Some("^release$")
+        );
+        assert_eq!(
+            matcher_pattern_for_event(HookEventName::TaskCompleted, Some("release|audit")),
+            Some("release|audit")
+        );
+        assert_eq!(
+            matcher_pattern_for_event(HookEventName::Notification, Some("workflow_.*")),
+            Some("workflow_.*")
         );
         assert_eq!(
             matcher_pattern_for_event(HookEventName::PreCompact, Some("^auto$")),

@@ -403,6 +403,7 @@ fn map_hooks_requirements_to_api(hooks: ManagedHooksRequirementsToml) -> Managed
         subagent_start,
         subagent_stop,
         stop,
+        ..
     } = hooks;
 
     ManagedHooksRequirements {

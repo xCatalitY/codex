@@ -23,9 +23,11 @@ use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::SubAgentActivityEvent;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::WorkflowProgressEvent;
 use serde::Serialize;
 
 use crate::AgentThreadId;
+use crate::CodeCellWorkflowProgress;
 use crate::CodexTurnId;
 use crate::ExecutionStatus;
 use crate::RawTraceEventPayload;
@@ -74,7 +76,34 @@ pub(crate) fn codex_turn_trace_event(
                 },
             })
         }
+        EventMsg::WorkflowProgress(event) => Some(CodexTurnTraceEvent {
+            context_turn_id: event.turn_id.clone(),
+            payload: RawTraceEventPayload::CodeCellWorkflowProgress {
+                runtime_cell_id: event.cell_id.clone(),
+                progress: workflow_progress_for_trace(event),
+            },
+        }),
         _ => None,
+    }
+}
+
+fn workflow_progress_for_trace(event: &WorkflowProgressEvent) -> CodeCellWorkflowProgress {
+    CodeCellWorkflowProgress {
+        run_id: event.run_id.clone(),
+        event: event.event.clone(),
+        unix_ms: event.unix_ms,
+        workflow: event.workflow.clone(),
+        phase: event.phase.clone(),
+        agent: event.agent.clone(),
+        agent_id: event.agent_id.clone(),
+        child: event.child.clone(),
+        child_index: event.child_index,
+        child_run_id: event.child_run_id.clone(),
+        item_index: event.item_index,
+        stage_index: event.stage_index,
+        step_index: event.step_index,
+        error: event.error.clone(),
+        message: event.message.clone(),
     }
 }
 
@@ -282,6 +311,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::HookCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
         | EventMsg::PlanDelta(_)
+        | EventMsg::WorkflowProgress(_)
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::CollabResumeBegin(_)
@@ -354,6 +384,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::HookCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
         | EventMsg::PlanDelta(_)
+        | EventMsg::WorkflowProgress(_)
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::CollabAgentSpawnBegin(_)

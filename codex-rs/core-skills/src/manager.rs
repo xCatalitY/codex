@@ -21,6 +21,7 @@ use crate::loader::SkillRoot;
 use crate::loader::load_skills_from_roots;
 use crate::loader::skill_roots;
 use crate::system::install_system_skills;
+use crate::system::install_system_workflows;
 use crate::system::uninstall_system_skills;
 use codex_config::SkillsConfig;
 
@@ -73,6 +74,9 @@ impl SkillsManager {
             cache_by_cwd: RwLock::new(HashMap::new()),
             cache_by_config: RwLock::new(HashMap::new()),
         };
+        if let Err(err) = install_system_workflows(&manager.codex_home) {
+            tracing::error!("failed to install system workflows: {err}");
+        }
         if !bundled_skills_enabled {
             // The loader caches bundled skills under `skills/.system`. Clearing that directory is
             // best-effort cleanup; root selection still enforces the config even if removal fails.

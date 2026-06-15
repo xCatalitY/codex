@@ -19,6 +19,7 @@ pub(super) struct FooterState {
     pub(super) mode: FooterMode,
     pub(super) hint_override: Option<Vec<(String, String)>>,
     pub(super) plan_mode_nudge_visible: bool,
+    pub(super) workflow_keyword_nudge_visible: bool,
     pub(super) flash: Option<FooterFlash>,
     pub(super) context_window_percent: Option<i64>,
     pub(super) context_window_used_tokens: Option<i64>,

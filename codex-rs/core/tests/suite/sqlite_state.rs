@@ -574,6 +574,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

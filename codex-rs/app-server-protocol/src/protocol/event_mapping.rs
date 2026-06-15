@@ -18,6 +18,7 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
+use crate::protocol::v2::WorkflowProgressNotification;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
@@ -372,6 +373,32 @@ pub fn item_event_to_server_notification(
             item_id: event.item_id,
             delta: event.delta,
         }),
+        EventMsg::WorkflowProgress(event) => {
+            ServerNotification::WorkflowProgress(WorkflowProgressNotification {
+                thread_id,
+                turn_id,
+                run_id: event.run_id,
+                cell_id: event.cell_id,
+                event: event.event,
+                unix_ms: event.unix_ms,
+                session_id: event.session_id,
+                workflow_tool_call_id: event.workflow_tool_call_id,
+                cwd: event.cwd,
+                git_branch: event.git_branch,
+                workflow: event.workflow,
+                phase: event.phase,
+                agent: event.agent,
+                agent_id: event.agent_id,
+                child: event.child,
+                child_index: event.child_index,
+                child_run_id: event.child_run_id,
+                item_index: event.item_index,
+                stage_index: event.stage_index,
+                step_index: event.step_index,
+                error: event.error,
+                message: event.message,
+            })
+        }
         EventMsg::ReasoningContentDelta(event) => {
             ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
                 thread_id,
@@ -471,6 +498,7 @@ mod tests {
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::WorkflowProgressEvent;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -607,5 +635,70 @@ mod tests {
                 delta: "hello".to_string(),
             },
         );
+    }
+
+    #[test]
+    fn workflow_progress_maps_to_workflow_progress_notification() {
+        let notification = item_event_to_server_notification(
+            EventMsg::WorkflowProgress(WorkflowProgressEvent {
+                thread_id: "ignored-thread".to_string(),
+                turn_id: "ignored-turn".to_string(),
+                run_id: "wf_progress".to_string(),
+                cell_id: "cell-1".to_string(),
+                event: "phase".to_string(),
+                unix_ms: 1_781_432_000_000,
+                session_id: Some("session-1".to_string()),
+                workflow_tool_call_id: Some("toolu_workflow".to_string()),
+                cwd: Some("/tmp/project".to_string()),
+                git_branch: Some("feature/workflows".to_string()),
+                workflow: Some("release".to_string()),
+                phase: Some("build".to_string()),
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: Some("artifacts".to_string()),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        match notification {
+            ServerNotification::WorkflowProgress(payload) => {
+                assert_eq!(
+                    payload,
+                    WorkflowProgressNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        run_id: "wf_progress".to_string(),
+                        cell_id: "cell-1".to_string(),
+                        event: "phase".to_string(),
+                        unix_ms: 1_781_432_000_000,
+                        session_id: Some("session-1".to_string()),
+                        workflow_tool_call_id: Some("toolu_workflow".to_string()),
+                        cwd: Some("/tmp/project".to_string()),
+                        git_branch: Some("feature/workflows".to_string()),
+                        workflow: Some("release".to_string()),
+                        phase: Some("build".to_string()),
+                        agent: None,
+                        agent_id: None,
+                        child: None,
+                        child_index: None,
+                        child_run_id: None,
+                        item_index: None,
+                        stage_index: None,
+                        step_index: None,
+                        error: None,
+                        message: Some("artifacts".to_string()),
+                    }
+                );
+            }
+            other => panic!("expected workflow progress notification, got {other:?}"),
+        }
     }
 }

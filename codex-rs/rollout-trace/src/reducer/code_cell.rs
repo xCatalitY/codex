@@ -22,6 +22,7 @@ use super::TraceReducer;
 use crate::model::CodeCell;
 use crate::model::CodeCellId;
 use crate::model::CodeCellRuntimeStatus;
+use crate::model::CodeCellWorkflowProgress;
 use crate::model::ConversationItemKind;
 use crate::model::ExecutionStatus;
 use crate::model::ExecutionWindow;
@@ -75,6 +76,9 @@ pub(super) enum PendingCodeCellLifecycleEventKind {
     },
     Ended {
         status: CodeCellRuntimeStatus,
+    },
+    WorkflowProgress {
+        progress: CodeCellWorkflowProgress,
     },
 }
 
@@ -197,6 +201,7 @@ impl TraceReducer {
                 source_js: started.source_js,
                 nested_tool_call_ids,
                 wait_tool_call_ids: Vec::new(),
+                workflow_progress: Vec::new(),
             },
         );
 
@@ -343,6 +348,43 @@ impl TraceReducer {
         Ok(())
     }
 
+    /// Records workflow progress for a code cell, or waits until its queued start materializes.
+    pub(super) fn record_or_queue_code_cell_workflow_progress(
+        &mut self,
+        seq: RawEventSeq,
+        wall_time_unix_ms: i64,
+        code_cell_id: CodeCellId,
+        progress: CodeCellWorkflowProgress,
+    ) -> Result<()> {
+        if !self.rollout.code_cells.contains_key(&code_cell_id) {
+            if self.pending_code_cell_starts.contains_key(&code_cell_id) {
+                self.queue_code_cell_lifecycle_event(
+                    code_cell_id,
+                    PendingCodeCellLifecycleEvent {
+                        seq,
+                        wall_time_unix_ms,
+                        kind: PendingCodeCellLifecycleEventKind::WorkflowProgress { progress },
+                    },
+                );
+                return Ok(());
+            }
+            bail!("code cell workflow progress referenced unknown cell {code_cell_id}");
+        }
+        self.record_code_cell_workflow_progress(code_cell_id, progress)
+    }
+
+    fn record_code_cell_workflow_progress(
+        &mut self,
+        code_cell_id: CodeCellId,
+        progress: CodeCellWorkflowProgress,
+    ) -> Result<()> {
+        let Some(cell) = self.rollout.code_cells.get_mut(&code_cell_id) else {
+            bail!("code cell workflow progress referenced unknown cell {code_cell_id}");
+        };
+        cell.workflow_progress.push(progress);
+        Ok(())
+    }
+
     /// Closes unfinished code cells when their owning turn is interrupted.
     ///
     /// A yielded code cell can outlive a completed turn and be resumed by a
@@ -416,6 +458,9 @@ impl TraceReducer {
                     code_cell_id.to_string(),
                     status,
                 )?,
+                PendingCodeCellLifecycleEventKind::WorkflowProgress { progress } => {
+                    self.record_code_cell_workflow_progress(code_cell_id.to_string(), progress)?
+                }
             }
         }
         Ok(())

@@ -76,6 +76,17 @@ impl ChatWidget {
             GuardianAssessmentAction::RequestPermissions { reason, .. } => {
                 Some(permission_request_summary("permission request", reason))
             }
+            GuardianAssessmentAction::Workflow {
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
+            } => Some(workflow_action_summary(
+                workflow_name,
+                source_kind,
+                source_name,
+                metadata_name,
+            )),
         };
         let guardian_command = |action: &GuardianAssessmentAction| match action {
             GuardianAssessmentAction::Command { command, .. } => shlex::split(command)
@@ -90,7 +101,8 @@ impl ChatWidget {
             GuardianAssessmentAction::ApplyPatch { .. }
             | GuardianAssessmentAction::NetworkAccess { .. }
             | GuardianAssessmentAction::McpToolCall { .. }
-            | GuardianAssessmentAction::RequestPermissions { .. } => None,
+            | GuardianAssessmentAction::RequestPermissions { .. }
+            | GuardianAssessmentAction::Workflow { .. } => None,
         };
 
         if ev.status == GuardianAssessmentStatus::InProgress
@@ -199,6 +211,20 @@ impl ChatWidget {
                             permission_request_summary("codex could request permissions", reason),
                         )
                     }
+                    GuardianAssessmentAction::Workflow {
+                        workflow_name,
+                        source_kind,
+                        source_name,
+                        metadata_name,
+                    } => history_cell::new_guardian_timed_out_action_request(format!(
+                        "codex could run {}",
+                        workflow_action_summary(
+                            workflow_name,
+                            source_kind,
+                            source_name,
+                            metadata_name,
+                        )
+                    )),
                     GuardianAssessmentAction::Command { .. } => unreachable!(),
                     GuardianAssessmentAction::Execve { .. } => unreachable!(),
                 }
@@ -244,6 +270,15 @@ impl ChatWidget {
                         reason,
                     ))
                 }
+                GuardianAssessmentAction::Workflow {
+                    workflow_name,
+                    source_kind,
+                    source_name,
+                    metadata_name,
+                } => history_cell::new_guardian_denied_action_request(format!(
+                    "codex to run {}",
+                    workflow_action_summary(workflow_name, source_kind, source_name, metadata_name,)
+                )),
                 GuardianAssessmentAction::Command { .. } => unreachable!(),
                 GuardianAssessmentAction::Execve { .. } => unreachable!(),
             }
@@ -453,4 +488,23 @@ impl ChatWidget {
         );
         self.request_redraw();
     }
+}
+
+fn workflow_action_summary(
+    workflow_name: &str,
+    source_kind: &str,
+    source_name: &str,
+    metadata_name: &str,
+) -> String {
+    let name = [metadata_name, workflow_name, source_name]
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or("workflow");
+    let source = match (source_kind.trim(), source_name.trim()) {
+        ("", _) | (_, "") => String::new(),
+        (source_kind, source_name) if source_name == name => format!(" ({source_kind})"),
+        (source_kind, source_name) => format!(" ({source_kind}: {source_name})"),
+    };
+    format!("workflow {name}{source}")
 }

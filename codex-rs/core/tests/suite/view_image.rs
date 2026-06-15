@@ -92,6 +92,7 @@ fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) ->
                     model,
                     reasoning_effort: None,
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

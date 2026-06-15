@@ -4,6 +4,7 @@ use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -68,6 +69,24 @@ impl InputQueue {
             .await
             .iter()
             .any(|mail| mail.trigger_turn)
+    }
+
+    pub(crate) async fn trigger_turn_final_output_json_schema(&self) -> Option<Value> {
+        self.mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .filter(|mail| mail.trigger_turn)
+            .find_map(|mail| mail.final_output_json_schema.clone())
+    }
+
+    pub(crate) async fn pending_mailbox_communications(&self) -> Vec<InterAgentCommunication> {
+        self.mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<ResponseItem> {
@@ -311,6 +330,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_queue_snapshots_pending_mailbox_communications_without_draining() {
+        let input_queue = InputQueue::new();
+        let mail_one = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "one",
+            /*trigger_turn*/ false,
+        );
+        let mail_two = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "two",
+            /*trigger_turn*/ false,
+        );
+
+        input_queue
+            .enqueue_mailbox_communication(mail_one.clone())
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(mail_two.clone())
+            .await;
+
+        assert_eq!(
+            input_queue.pending_mailbox_communications().await,
+            vec![mail_one.clone(), mail_two.clone()]
+        );
+        assert!(input_queue.has_pending_mailbox_items().await);
+        assert_eq!(
+            input_queue.drain_mailbox_input_items().await,
+            vec![
+                ResponseItem::from(mail_one.to_response_input_item()),
+                ResponseItem::from(mail_two.to_response_input_item())
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn input_queue_tracks_pending_trigger_turn_mail() {
         let input_queue = InputQueue::new();
 
@@ -333,5 +389,54 @@ mod tests {
             ))
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_tracks_trigger_turn_final_output_schema() {
+        let input_queue = InputQueue::new();
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" }
+            },
+            "required": ["ok"],
+            "additionalProperties": false
+        });
+
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "queued",
+                    /*trigger_turn*/ false,
+                )
+                .with_final_output_json_schema(Some(serde_json::json!({"ignored": true}))),
+            )
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "wake-without-schema",
+                /*trigger_turn*/ true,
+            ))
+            .await;
+        input_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "wake-with-schema",
+                    /*trigger_turn*/ true,
+                )
+                .with_final_output_json_schema(Some(schema.clone())),
+            )
+            .await;
+
+        assert_eq!(
+            input_queue.trigger_turn_final_output_json_schema().await,
+            Some(schema)
+        );
     }
 }

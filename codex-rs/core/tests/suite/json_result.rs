@@ -96,6 +96,7 @@ async fn codex_returns_json_result(model: String) -> anyhow::Result<()> {
                         model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

@@ -48,6 +48,26 @@ pub struct CodeCell {
     pub source_js: String,
     pub nested_tool_call_ids: Vec<ToolCallId>,
     pub wait_tool_call_ids: Vec<ToolCallId>,
+    pub workflow_progress: Vec<CodeCellWorkflowProgress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeCellWorkflowProgress {
+    pub run_id: String,
+    pub event: String,
+    pub unix_ms: i64,
+    pub workflow: Option<String>,
+    pub phase: Option<String>,
+    pub agent: Option<String>,
+    pub agent_id: Option<String>,
+    pub child: Option<String>,
+    pub child_index: Option<u64>,
+    pub child_run_id: Option<String>,
+    pub item_index: Option<u64>,
+    pub stage_index: Option<u64>,
+    pub step_index: Option<u64>,
+    pub error: Option<String>,
+    pub message: Option<String>,
 }
 
 /// Code-mode runtime lifecycle.

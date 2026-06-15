@@ -104,6 +104,16 @@ use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadWorkflowAgentControlParams;
+use codex_app_server_protocol::ThreadWorkflowAgentControlResponse;
+use codex_app_server_protocol::ThreadWorkflowAgentInterruptParams;
+use codex_app_server_protocol::ThreadWorkflowAgentInterruptResponse;
+use codex_app_server_protocol::ThreadWorkflowCancelParams;
+use codex_app_server_protocol::ThreadWorkflowCancelResponse;
+use codex_app_server_protocol::ThreadWorkflowContinueParams;
+use codex_app_server_protocol::ThreadWorkflowContinueResponse;
+use codex_app_server_protocol::ThreadWorkflowPauseParams;
+use codex_app_server_protocol::ThreadWorkflowPauseResponse;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -124,6 +134,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::WorkflowAgentControlAction;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::ContextCompat;
 use color_eyre::eyre::Result;
@@ -1001,6 +1012,118 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/shellCommand failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_workflow_cancel(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        cell_id: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadWorkflowCancelResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadWorkflowCancel {
+                request_id,
+                params: ThreadWorkflowCancelParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    cell_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/cancel failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_workflow_pause(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        cell_id: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadWorkflowPauseResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadWorkflowPause {
+                request_id,
+                params: ThreadWorkflowPauseParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    cell_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/pause failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_workflow_continue(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        cell_id: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadWorkflowContinueResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadWorkflowContinue {
+                request_id,
+                params: ThreadWorkflowContinueParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    cell_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/continue failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_workflow_agent_interrupt(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        agent_id: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadWorkflowAgentInterruptResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadWorkflowAgentInterrupt {
+                request_id,
+                params: ThreadWorkflowAgentInterruptParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    agent_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/agent/interrupt failed in TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn thread_workflow_agent_control(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        agent_id: String,
+        action: WorkflowAgentControlAction,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ThreadWorkflowAgentControlResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadWorkflowAgentControl {
+                request_id,
+                params: ThreadWorkflowAgentControlParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    agent_id,
+                    action,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/agent/control failed in TUI")?;
         Ok(())
     }
 

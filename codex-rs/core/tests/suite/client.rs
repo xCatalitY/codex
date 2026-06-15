@@ -1772,6 +1772,7 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
             model: "gpt-5.4".to_string(),
             reasoning_effort: Some(ReasoningEffort::High),
             developer_instructions: None,
+            workflow_mode: None,
         },
     };
 
@@ -1970,6 +1971,7 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
                         model: session_configured.model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

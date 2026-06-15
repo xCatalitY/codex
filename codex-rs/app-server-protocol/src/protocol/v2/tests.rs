@@ -959,6 +959,244 @@ fn thread_shell_command_response_round_trip() {
 }
 
 #[test]
+fn thread_workflow_cancel_params_round_trip() {
+    let params = ThreadWorkflowCancelParams {
+        thread_id: "thr_123".to_string(),
+        run_id: "wf_alpha".to_string(),
+        cell_id: "cell-123".to_string(),
+    };
+
+    let value = serde_json::to_value(&params).expect("serialize thread/workflow/cancel params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runId": "wf_alpha",
+            "cellId": "cell-123",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadWorkflowCancelParams>(value)
+        .expect("deserialize thread/workflow/cancel params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_workflow_cancel_response_round_trip() {
+    let response = ThreadWorkflowCancelResponse {};
+
+    let value = serde_json::to_value(&response).expect("serialize thread/workflow/cancel response");
+    assert_eq!(value, json!({}));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowCancelResponse>(value)
+        .expect("deserialize thread/workflow/cancel response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn thread_workflow_pause_params_round_trip() {
+    let params = ThreadWorkflowPauseParams {
+        thread_id: "thr_123".to_string(),
+        run_id: "wf_alpha".to_string(),
+        cell_id: "cell-123".to_string(),
+    };
+
+    let value = serde_json::to_value(&params).expect("serialize thread/workflow/pause params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runId": "wf_alpha",
+            "cellId": "cell-123",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadWorkflowPauseParams>(value)
+        .expect("deserialize thread/workflow/pause params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_workflow_pause_response_round_trip() {
+    let response = ThreadWorkflowPauseResponse {};
+
+    let value = serde_json::to_value(&response).expect("serialize thread/workflow/pause response");
+    assert_eq!(value, json!({}));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowPauseResponse>(value)
+        .expect("deserialize thread/workflow/pause response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn thread_workflow_continue_params_round_trip() {
+    let params = ThreadWorkflowContinueParams {
+        thread_id: "thr_123".to_string(),
+        run_id: "wf_alpha".to_string(),
+        cell_id: "cell-123".to_string(),
+    };
+
+    let value = serde_json::to_value(&params).expect("serialize thread/workflow/continue params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thr_123",
+            "runId": "wf_alpha",
+            "cellId": "cell-123",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadWorkflowContinueParams>(value)
+        .expect("deserialize thread/workflow/continue params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_workflow_continue_response_round_trip() {
+    let response = ThreadWorkflowContinueResponse {};
+
+    let value =
+        serde_json::to_value(&response).expect("serialize thread/workflow/continue response");
+    assert_eq!(value, json!({}));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowContinueResponse>(value)
+        .expect("deserialize thread/workflow/continue response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn thread_workflow_agent_interrupt_params_round_trip() {
+    let params = ThreadWorkflowAgentInterruptParams {
+        thread_id: "thread-1".to_string(),
+        run_id: "wf_run".to_string(),
+        agent_id: "/root/workflow_1".to_string(),
+    };
+
+    let value =
+        serde_json::to_value(&params).expect("serialize thread/workflow/agent/interrupt params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thread-1",
+            "runId": "wf_run",
+            "agentId": "/root/workflow_1",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadWorkflowAgentInterruptParams>(value)
+        .expect("deserialize thread/workflow/agent/interrupt params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_workflow_agent_interrupt_response_round_trip() {
+    let response = ThreadWorkflowAgentInterruptResponse {};
+
+    let value = serde_json::to_value(&response)
+        .expect("serialize thread/workflow/agent/interrupt response");
+    assert_eq!(value, json!({}));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowAgentInterruptResponse>(value)
+        .expect("deserialize thread/workflow/agent/interrupt response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn thread_workflow_agent_control_params_round_trip() {
+    let params = ThreadWorkflowAgentControlParams {
+        thread_id: "thread-1".to_string(),
+        run_id: "wf_run".to_string(),
+        agent_id: "/root/workflow_1".to_string(),
+        action: codex_protocol::protocol::WorkflowAgentControlAction::Retry,
+    };
+
+    let value =
+        serde_json::to_value(&params).expect("serialize thread/workflow/agent/control params");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thread-1",
+            "runId": "wf_run",
+            "agentId": "/root/workflow_1",
+            "action": "retry",
+        })
+    );
+
+    let decoded = serde_json::from_value::<ThreadWorkflowAgentControlParams>(value)
+        .expect("deserialize thread/workflow/agent/control params");
+    assert_eq!(decoded, params);
+}
+
+#[test]
+fn thread_workflow_agent_control_response_round_trip() {
+    let response = ThreadWorkflowAgentControlResponse {};
+
+    let value =
+        serde_json::to_value(&response).expect("serialize thread/workflow/agent/control response");
+    assert_eq!(value, json!({}));
+
+    let decoded = serde_json::from_value::<ThreadWorkflowAgentControlResponse>(value)
+        .expect("deserialize thread/workflow/agent/control response");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn workflow_progress_notification_round_trip() {
+    let notification = WorkflowProgressNotification {
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        run_id: "wf_progress".to_string(),
+        cell_id: "cell-1".to_string(),
+        event: "agent_start".to_string(),
+        unix_ms: 1_781_432_000_000,
+        session_id: Some("session-1".to_string()),
+        workflow_tool_call_id: Some("toolu_workflow".to_string()),
+        cwd: Some("/tmp/project".to_string()),
+        git_branch: Some("feature/workflows".to_string()),
+        workflow: Some("release".to_string()),
+        phase: None,
+        agent: Some("build_agent".to_string()),
+        agent_id: Some("/root/workflow_release_1".to_string()),
+        child: None,
+        child_index: None,
+        child_run_id: None,
+        item_index: Some(2),
+        stage_index: Some(1),
+        step_index: None,
+        error: Some("build failed".to_string()),
+        message: Some("build artifacts".to_string()),
+    };
+
+    let value = serde_json::to_value(&notification).expect("serialize workflow/progress");
+    assert_eq!(
+        value,
+        json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "runId": "wf_progress",
+            "cellId": "cell-1",
+            "event": "agent_start",
+            "unixMs": 1781432000000_i64,
+            "sessionId": "session-1",
+            "workflowToolCallId": "toolu_workflow",
+            "cwd": "/tmp/project",
+            "gitBranch": "feature/workflows",
+            "workflow": "release",
+            "agent": "build_agent",
+            "agentId": "/root/workflow_release_1",
+            "itemIndex": 2,
+            "stageIndex": 1,
+            "error": "build failed",
+            "message": "build artifacts",
+        })
+    );
+
+    let decoded = serde_json::from_value::<WorkflowProgressNotification>(value)
+        .expect("deserialize workflow/progress");
+    assert_eq!(decoded, notification);
+}
+
+#[test]
 fn fs_changed_notification_round_trips() {
     let notification = FsChangedNotification {
         watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
@@ -3748,6 +3986,7 @@ fn thread_settings_update_params_preserve_field_level_experimental_gates() {
                 model: "mock-model".to_string(),
                 reasoning_effort: None,
                 developer_instructions: None,
+                workflow_mode: None,
             },
         }),
         ..Default::default()

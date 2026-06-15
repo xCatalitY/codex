@@ -473,6 +473,13 @@ pub struct AdditionalContextEntry {
 }
 
 /// Submission operation
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize, TS, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowAgentControlAction {
+    Skip,
+    Retry,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
@@ -484,6 +491,48 @@ pub enum Op {
     /// Terminate all running background terminal processes for this thread.
     /// Use this when callers intentionally want to stop long-lived background shells.
     CleanBackgroundTerminals,
+
+    /// Terminate a running workflow code-mode cell without involving the model.
+    WorkflowCancel {
+        /// Workflow run id shown in `/workflows`.
+        run_id: String,
+        /// Code-mode cell id recorded on the workflow snapshot.
+        cell_id: String,
+    },
+
+    /// Pause a running workflow code-mode cell at its next pending boundary.
+    WorkflowPause {
+        /// Workflow run id shown in `/workflows`.
+        run_id: String,
+        /// Code-mode cell id recorded on the workflow snapshot.
+        cell_id: String,
+    },
+
+    /// Resume a paused workflow code-mode cell until its next pending or terminal boundary.
+    WorkflowContinue {
+        /// Workflow run id shown in `/workflows`.
+        run_id: String,
+        /// Code-mode cell id recorded on the workflow snapshot.
+        cell_id: String,
+    },
+
+    /// Interrupt a running agent that belongs to a workflow run.
+    WorkflowAgentInterrupt {
+        /// Workflow run id shown in `/workflows`.
+        run_id: String,
+        /// Canonical workflow agent path shown in `/workflows detail`.
+        agent_id: String,
+    },
+
+    /// Request a workflow runtime action for a running selected agent.
+    WorkflowAgentControl {
+        /// Workflow run id shown in `/workflows`.
+        run_id: String,
+        /// Canonical workflow agent path shown in `/workflows detail`.
+        agent_id: String,
+        /// Requested selected-agent action.
+        action: WorkflowAgentControlAction,
+    },
 
     /// Start a realtime conversation stream.
     RealtimeConversationStart(ConversationStartParams),
@@ -662,6 +711,10 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub encrypted_content: Option<String>,
     pub trigger_turn: bool,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub final_output_json_schema: Option<Value>,
 }
 
 impl InterAgentCommunication {
@@ -679,6 +732,7 @@ impl InterAgentCommunication {
             content,
             encrypted_content: None,
             trigger_turn,
+            final_output_json_schema: None,
         }
     }
 
@@ -696,7 +750,13 @@ impl InterAgentCommunication {
             content: String::new(),
             encrypted_content: Some(encrypted_content),
             trigger_turn,
+            final_output_json_schema: None,
         }
+    }
+
+    pub fn with_final_output_json_schema(mut self, schema: Option<Value>) -> Self {
+        self.final_output_json_schema = schema;
+        self
     }
 
     pub fn to_response_input_item(&self) -> ResponseInputItem {
@@ -741,6 +801,11 @@ impl Op {
         match self {
             Self::Interrupt => "interrupt",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
+            Self::WorkflowCancel { .. } => "workflow_cancel",
+            Self::WorkflowPause { .. } => "workflow_pause",
+            Self::WorkflowContinue { .. } => "workflow_continue",
+            Self::WorkflowAgentInterrupt { .. } => "workflow_agent_interrupt",
+            Self::WorkflowAgentControl { .. } => "workflow_agent_control",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
             Self::RealtimeConversationAudio(_) => "realtime_conversation_audio",
             Self::RealtimeConversationText(_) => "realtime_conversation_text",
@@ -1330,6 +1395,7 @@ pub enum EventMsg {
 
     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
     PlanDelta(PlanDeltaEvent),
+    WorkflowProgress(WorkflowProgressEvent),
     ReasoningContentDelta(ReasoningContentDeltaEvent),
     ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
 
@@ -1370,6 +1436,9 @@ pub enum HookEventName {
     UserPromptSubmit,
     SubagentStart,
     SubagentStop,
+    TaskCreated,
+    TaskCompleted,
+    Notification,
     Stop,
 }
 
@@ -1755,6 +1824,48 @@ pub struct PlanDeltaEvent {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS, JsonSchema)]
+pub struct WorkflowProgressEvent {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub run_id: String,
+    pub cell_id: String,
+    pub event: String,
+    pub unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -4138,6 +4249,7 @@ mod tests {
             content: "review the diff".to_string(),
             encrypted_content: None,
             trigger_turn: true,
+            final_output_json_schema: None,
         };
 
         assert_eq!(
@@ -4150,6 +4262,28 @@ mod tests {
                 phase: Some(MessagePhase::Commentary),
             }
         );
+    }
+
+    #[test]
+    fn inter_agent_communication_final_schema_is_internal_only() {
+        let communication = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root().join("reviewer").expect("recipient path"),
+            Vec::new(),
+            "review the diff".to_string(),
+            true,
+        )
+        .with_final_output_json_schema(Some(json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" }
+            }
+        })));
+
+        let serialized =
+            serde_json::to_string(&communication).expect("communication should serialize");
+        assert!(!serialized.contains("final_output_json_schema"));
+        assert!(!serialized.contains("properties"));
     }
 
     #[test]

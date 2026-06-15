@@ -214,6 +214,7 @@ async fn submit_unified_exec_turn(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -306,6 +307,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -2404,6 +2406,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -2507,6 +2510,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -2979,6 +2983,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -3101,6 +3106,7 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -3239,6 +3245,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

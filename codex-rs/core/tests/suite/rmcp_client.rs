@@ -152,6 +152,7 @@ fn user_turn_with_permission_profile(
                     model,
                     reasoning_effort: None,
                     developer_instructions: None,
+                    workflow_mode: None,
                 },
             }),
             ..Default::default()

@@ -14,6 +14,12 @@ pub(crate) struct GeneratedHookSchemas {
     pub pre_tool_use_command_output: Value,
     pub pre_compact_command_input: Value,
     pub pre_compact_command_output: Value,
+    pub task_created_command_input: Value,
+    pub task_created_command_output: Value,
+    pub task_completed_command_input: Value,
+    pub task_completed_command_output: Value,
+    pub notification_command_input: Value,
+    pub notification_command_output: Value,
     pub session_start_command_input: Value,
     pub session_start_command_output: Value,
     pub subagent_start_command_input: Value,
@@ -68,6 +74,30 @@ pub(crate) fn generated_hook_schemas() -> &'static GeneratedHookSchemas {
         pre_compact_command_output: parse_json_schema(
             "pre-compact.command.output",
             include_str!("../../schema/generated/pre-compact.command.output.schema.json"),
+        ),
+        task_created_command_input: parse_json_schema(
+            "task-created.command.input",
+            include_str!("../../schema/generated/task-created.command.input.schema.json"),
+        ),
+        task_created_command_output: parse_json_schema(
+            "task-created.command.output",
+            include_str!("../../schema/generated/task-created.command.output.schema.json"),
+        ),
+        task_completed_command_input: parse_json_schema(
+            "task-completed.command.input",
+            include_str!("../../schema/generated/task-completed.command.input.schema.json"),
+        ),
+        task_completed_command_output: parse_json_schema(
+            "task-completed.command.output",
+            include_str!("../../schema/generated/task-completed.command.output.schema.json"),
+        ),
+        notification_command_input: parse_json_schema(
+            "notification.command.input",
+            include_str!("../../schema/generated/notification.command.input.schema.json"),
+        ),
+        notification_command_output: parse_json_schema(
+            "notification.command.output",
+            include_str!("../../schema/generated/notification.command.output.schema.json"),
         ),
         session_start_command_input: parse_json_schema(
             "session-start.command.input",
@@ -136,6 +166,12 @@ mod tests {
         assert_eq!(schemas.pre_tool_use_command_output["type"], "object");
         assert_eq!(schemas.pre_compact_command_input["type"], "object");
         assert_eq!(schemas.pre_compact_command_output["type"], "object");
+        assert_eq!(schemas.task_created_command_input["type"], "object");
+        assert_eq!(schemas.task_created_command_output["type"], "object");
+        assert_eq!(schemas.task_completed_command_input["type"], "object");
+        assert_eq!(schemas.task_completed_command_output["type"], "object");
+        assert_eq!(schemas.notification_command_input["type"], "object");
+        assert_eq!(schemas.notification_command_output["type"], "object");
         assert_eq!(schemas.session_start_command_input["type"], "object");
         assert_eq!(schemas.session_start_command_output["type"], "object");
         assert_eq!(schemas.subagent_start_command_input["type"], "object");

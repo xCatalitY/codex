@@ -14,6 +14,82 @@ pub(super) struct WindowsSetupPermissions {
     pub(super) workspace_roots: Vec<AbsolutePathBuf>,
 }
 
+fn set_named_workflow_approval(
+    named: &mut std::collections::HashMap<String, codex_config::types::WorkflowDefinitionConfig>,
+    workflow_name: &str,
+    approval: Option<WorkflowApproval>,
+) {
+    match approval {
+        Some(approval) => {
+            named.entry(workflow_name.to_string()).or_default().approval = Some(approval);
+        }
+        None => {
+            let should_remove = if let Some(config) = named.get_mut(workflow_name) {
+                config.approval = None;
+                config.enabled.is_none()
+            } else {
+                false
+            };
+            if should_remove {
+                named.remove(workflow_name);
+            }
+        }
+    }
+}
+
+fn set_named_workflow_enabled(
+    named: &mut std::collections::HashMap<String, codex_config::types::WorkflowDefinitionConfig>,
+    workflow_name: &str,
+    enabled: Option<bool>,
+) {
+    match enabled {
+        Some(enabled) => {
+            named.entry(workflow_name.to_string()).or_default().enabled = Some(enabled);
+        }
+        None => {
+            let should_remove = if let Some(config) = named.get_mut(workflow_name) {
+                config.enabled = None;
+                config.approval.is_none()
+            } else {
+                false
+            };
+            if should_remove {
+                named.remove(workflow_name);
+            }
+        }
+    }
+}
+
+fn workflow_approval_config_label(approval: WorkflowApproval) -> &'static str {
+    match approval {
+        WorkflowApproval::Auto => "auto",
+        WorkflowApproval::Ask => "ask",
+        WorkflowApproval::Allow => "allow",
+        WorkflowApproval::Deny => "deny",
+    }
+}
+
+fn named_workflow_approval_saved_message(
+    workflow_name: &str,
+    approval: Option<WorkflowApproval>,
+) -> String {
+    match approval {
+        Some(approval) => format!(
+            "Workflow `{workflow_name}` approval set to {}.",
+            workflow_approval_config_label(approval)
+        ),
+        None => format!("Workflow `{workflow_name}` approval override cleared."),
+    }
+}
+
+fn named_workflow_enabled_saved_message(workflow_name: &str, enabled: Option<bool>) -> String {
+    match enabled {
+        Some(true) => format!("Workflow `{workflow_name}` enabled."),
+        Some(false) => format!("Workflow `{workflow_name}` disabled."),
+        None => format!("Workflow `{workflow_name}` enabled override cleared."),
+    }
+}
+
 async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     error_context: String,
@@ -700,6 +776,65 @@ impl App {
         }
     }
 
+    pub(super) async fn update_workflow_settings(
+        &mut self,
+        app_server: &mut AppServerSession,
+        enabled: bool,
+        mode: WorkflowMode,
+        approval: WorkflowApproval,
+        keyword_trigger_enabled: bool,
+    ) -> bool {
+        let edits = crate::config_update::build_workflow_settings_edits(
+            enabled,
+            mode,
+            approval,
+            keyword_trigger_enabled,
+        );
+
+        let write_response = match crate::config_update::write_config_batch(
+            app_server.request_handle(),
+            edits,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::error!(error = %err, "failed to persist workflow settings");
+                self.chat_widget
+                    .add_error_message(format!("Failed to save workflow settings: {err}"));
+                return false;
+            }
+        };
+        if write_response.status == WriteStatus::OkOverridden {
+            let message = overridden_write_message(&write_response);
+            tracing::warn!(
+                message,
+                "workflow settings config write was overridden by effective config"
+            );
+            self.chat_widget.add_error_message(format!(
+                "Workflow setting changes were saved but not applied: {message}"
+            ));
+            let Some(effective_config) = self
+                .read_effective_config_after_overridden_write(
+                    app_server,
+                    "Workflow setting changes",
+                )
+                .await
+            else {
+                return false;
+            };
+            return self.sync_workflow_state_from_effective_config(&effective_config);
+        }
+
+        self.apply_workflow_settings_to_app_and_widget(
+            enabled,
+            mode,
+            approval,
+            keyword_trigger_enabled,
+        );
+        true
+    }
+
     pub(super) async fn reset_memories_with_app_server(
         &mut self,
         app_server: &mut AppServerSession,
@@ -933,6 +1068,173 @@ impl App {
         true
     }
 
+    fn sync_workflow_state_from_effective_config(
+        &mut self,
+        effective_config: &ConfigReadResponse,
+    ) -> bool {
+        let Some(workflows) = workflows_from_effective_config(effective_config) else {
+            tracing::warn!(
+                "config/read omitted workflows after an overridden workflow settings write"
+            );
+            return false;
+        };
+        let enabled = workflows.enabled.unwrap_or(self.config.workflows.enabled);
+        let mode = workflows.mode.unwrap_or(self.config.workflows.mode);
+        let approval = workflows.approval.unwrap_or(self.config.workflows.approval);
+        let keyword_trigger_enabled = workflows
+            .keyword_trigger_enabled
+            .unwrap_or(self.config.workflows.keyword_trigger_enabled);
+        if let Some(named) = workflows.named {
+            self.config.workflows.named = named.clone();
+            self.chat_widget.set_workflow_named_configs(named);
+        }
+        self.apply_workflow_settings_to_app_and_widget(
+            enabled,
+            mode,
+            approval,
+            keyword_trigger_enabled,
+        );
+        true
+    }
+
+    pub(super) async fn update_named_workflow_approval(
+        &mut self,
+        app_server: &mut AppServerSession,
+        workflow_name: String,
+        approval: Option<WorkflowApproval>,
+    ) -> bool {
+        let edit =
+            crate::config_update::build_named_workflow_approval_edit(&workflow_name, approval);
+        let write_response =
+            match crate::config_update::write_config_batch(app_server.request_handle(), vec![edit])
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::error!(
+                        error = %err,
+                        workflow_name,
+                        "failed to persist named workflow approval"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to save workflow approval for `{workflow_name}`: {err}"
+                    ));
+                    return false;
+                }
+            };
+        if write_response.status == WriteStatus::OkOverridden {
+            let message = overridden_write_message(&write_response);
+            tracing::warn!(
+                message,
+                workflow_name,
+                "named workflow approval config write was overridden by effective config"
+            );
+            self.chat_widget.add_error_message(format!(
+                "Workflow approval for `{workflow_name}` was saved but not applied: {message}"
+            ));
+            let Some(effective_config) = self
+                .read_effective_config_after_overridden_write(app_server, "Named workflow approval")
+                .await
+            else {
+                return false;
+            };
+            return self.sync_workflow_state_from_effective_config(&effective_config);
+        }
+
+        self.apply_named_workflow_approval_to_app_and_widget(&workflow_name, approval);
+        self.chat_widget.add_info_message(
+            named_workflow_approval_saved_message(&workflow_name, approval),
+            None,
+        );
+        true
+    }
+
+    pub(super) async fn update_named_workflow_enabled(
+        &mut self,
+        app_server: &mut AppServerSession,
+        workflow_name: String,
+        enabled: Option<bool>,
+    ) -> bool {
+        let edit = crate::config_update::build_named_workflow_enabled_edit(&workflow_name, enabled);
+        let write_response =
+            match crate::config_update::write_config_batch(app_server.request_handle(), vec![edit])
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::error!(
+                        error = %err,
+                        workflow_name,
+                        "failed to persist named workflow enabled override"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to save workflow enabled override for `{workflow_name}`: {err}"
+                    ));
+                    return false;
+                }
+            };
+        if write_response.status == WriteStatus::OkOverridden {
+            let message = overridden_write_message(&write_response);
+            tracing::warn!(
+                message,
+                workflow_name,
+                "named workflow enabled config write was overridden by effective config"
+            );
+            self.chat_widget.add_error_message(format!(
+                "Workflow enabled override for `{workflow_name}` was saved but not applied: {message}"
+            ));
+            let Some(effective_config) = self
+                .read_effective_config_after_overridden_write(app_server, "Named workflow enabled")
+                .await
+            else {
+                return false;
+            };
+            return self.sync_workflow_state_from_effective_config(&effective_config);
+        }
+
+        self.apply_named_workflow_enabled_to_app_and_widget(&workflow_name, enabled);
+        self.chat_widget.add_info_message(
+            named_workflow_enabled_saved_message(&workflow_name, enabled),
+            None,
+        );
+        true
+    }
+
+    fn apply_workflow_settings_to_app_and_widget(
+        &mut self,
+        enabled: bool,
+        mode: WorkflowMode,
+        approval: WorkflowApproval,
+        keyword_trigger_enabled: bool,
+    ) {
+        self.config.workflows.enabled = enabled;
+        self.config.workflows.mode = mode;
+        self.config.workflows.approval = approval;
+        self.config.workflows.keyword_trigger_enabled = keyword_trigger_enabled;
+        self.chat_widget
+            .set_workflow_settings(enabled, mode, approval, keyword_trigger_enabled);
+    }
+
+    fn apply_named_workflow_approval_to_app_and_widget(
+        &mut self,
+        workflow_name: &str,
+        approval: Option<WorkflowApproval>,
+    ) {
+        set_named_workflow_approval(&mut self.config.workflows.named, workflow_name, approval);
+        self.chat_widget
+            .set_named_workflow_approval(workflow_name, approval);
+    }
+
+    fn apply_named_workflow_enabled_to_app_and_widget(
+        &mut self,
+        workflow_name: &str,
+        enabled: Option<bool>,
+    ) {
+        set_named_workflow_enabled(&mut self.config.workflows.named, workflow_name, enabled);
+        self.chat_widget
+            .set_named_workflow_enabled(workflow_name, enabled);
+    }
+
     #[cfg(target_os = "windows")]
     pub(super) async fn sync_windows_sandbox_after_overridden_write(
         &mut self,
@@ -1034,6 +1336,14 @@ fn memories_from_effective_config(effective_config: &ConfigReadResponse) -> Opti
         .additional
         .get("memories")
         .and_then(|memories| serde_json::from_value(memories.clone()).ok())
+}
+
+fn workflows_from_effective_config(effective_config: &ConfigReadResponse) -> Option<WorkflowsToml> {
+    effective_config
+        .config
+        .additional
+        .get("workflows")
+        .and_then(|workflows| serde_json::from_value(workflows.clone()).ok())
 }
 
 fn features_toml_from_json(value: &serde_json::Value) -> Option<FeaturesToml> {

@@ -136,6 +136,8 @@ use codex_config::types::MemoriesToml;
 use codex_config::types::ModelAvailabilityNuxConfig;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsToml;
+use codex_config::types::WorkflowApproval;
+use codex_config::types::WorkflowsToml;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
@@ -148,6 +150,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;

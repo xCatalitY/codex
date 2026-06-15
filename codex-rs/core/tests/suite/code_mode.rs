@@ -5,12 +5,17 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_config::types::WorkflowApproval;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -26,6 +31,7 @@ use core_test_support::apps_test_server::DIRECT_CALENDAR_APP_ONLY_TOOL;
 use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::assert_regex_match;
+use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
@@ -41,6 +47,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use core_test_support::wait_for_mcp_server;
 use image::DynamicImage;
 use image::GenericImageView;
@@ -111,6 +118,164 @@ fn extract_running_cell_id(text: &str) -> String {
         .and_then(|rest| rest.split('\n').next())
         .expect("running header should contain a cell ID")
         .to_string()
+}
+
+fn extract_prefixed_running_cell_id(text: &str) -> String {
+    text.lines()
+        .find_map(|line| {
+            line.strip_prefix("Script running with cell ID ")
+                .map(str::to_string)
+        })
+        .expect("running workflow output should contain a cell ID")
+}
+
+fn write_workflow_lifecycle_hooks(home: &Path, workflow_name: &str) -> Result<()> {
+    let script_path = home.join("workflow_lifecycle_hook.py");
+    let log_path = home.join("workflow_lifecycle_hook_log.jsonl");
+    let script = format!(
+        r#"import json
+from pathlib import Path
+import sys
+
+payload = json.load(sys.stdin)
+with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload) + "\n")
+"#,
+        log_path = log_path.display(),
+    );
+    let command = format!("python3 {}", script_path.display());
+    let workflow_matcher = format!("^{workflow_name}$");
+    let hooks = serde_json::json!({
+        "hooks": {
+            "TaskCreated": [{
+                "matcher": workflow_matcher.clone(),
+                "hooks": [{
+                    "type": "command",
+                    "command": command.clone(),
+                }]
+            }],
+            "Notification": [{
+                "matcher": "^workflow_complete$",
+                "hooks": [{
+                    "type": "command",
+                    "command": command.clone(),
+                }]
+            }],
+            "TaskCompleted": [{
+                "matcher": workflow_matcher,
+                "hooks": [{
+                    "type": "command",
+                    "command": command,
+                }]
+            }]
+        }
+    });
+
+    fs::write(&script_path, script)?;
+    fs::write(home.join("hooks.json"), hooks.to_string())?;
+    Ok(())
+}
+
+fn read_workflow_lifecycle_hook_inputs(home: &Path) -> Result<Vec<Value>> {
+    let log_path = home.join("workflow_lifecycle_hook_log.jsonl");
+    let contents = fs::read_to_string(log_path)?;
+    let mut inputs = Vec::new();
+    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        inputs.push(serde_json::from_str(line)?);
+    }
+    Ok(inputs)
+}
+
+fn write_minimal_workflow_snapshot(
+    home: &Path,
+    run_id: &str,
+    workflow_name: &str,
+    cell_id: &str,
+    status: &str,
+) -> Result<()> {
+    let workflow_runs_dir = home.join("workflow-runs");
+    fs::create_dir_all(&workflow_runs_dir)?;
+    fs::write(
+        workflow_runs_dir.join(format!("{run_id}.json")),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "run_id": run_id,
+            "workflow_name": workflow_name,
+            "metadata_name": workflow_name,
+            "description": "Release workflow",
+            "status": status,
+            "status_history": [
+                { "event": "started", "unix_ms": 1_u64 },
+                { "event": status, "status": status, "unix_ms": 2_u64 }
+            ],
+            "cell_id": cell_id,
+            "source": { "kind": "inline", "name": "inline", "path": null },
+            "args": null,
+            "started_unix_ms": 1_u64,
+            "updated_unix_ms": 2_u64,
+            "ended_unix_ms": null,
+            "duration_ms": null,
+            "output_preview": null,
+            "error": null
+        }))?,
+    )?;
+    Ok(())
+}
+
+fn read_workflow_snapshot(home: &Path, run_id: &str) -> Result<Value> {
+    let snapshot_path = home.join("workflow-runs").join(format!("{run_id}.json"));
+    Ok(serde_json::from_str(&fs::read_to_string(snapshot_path)?)?)
+}
+
+async fn submit_workflow_turn(
+    test: &TestCodex,
+    prompt: &str,
+    workflow_mode: WorkflowMode,
+) -> Result<()> {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Default,
+                    settings: Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                        workflow_mode: Some(workflow_mode),
+                    },
+                }),
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_event_with_timeout(
+        &test.codex,
+        |event| match event {
+            EventMsg::TurnComplete(event) => event.turn_id == turn_id,
+            _ => false,
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+    Ok(())
 }
 
 fn wait_for_file_source(path: &Path) -> Result<String> {
@@ -1879,6 +2044,516 @@ text("after terminate");
     Ok(())
 }
 
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_cancel_emits_progress_event_for_terminated_live_cell() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+
+    let code = r#"
+text("phase 1");
+yield_control();
+await new Promise((resolve) => setTimeout(resolve, 60000));
+text("phase 2");
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the workflow cell").await?;
+
+    let first_request = first_completion.single_request();
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2);
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+    let workflow_runs_dir = test.codex_home_path().join("workflow-runs");
+    fs::create_dir_all(&workflow_runs_dir)?;
+    fs::write(
+        workflow_runs_dir.join("run-1.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "run_id": "run-1",
+            "workflow_name": "release",
+            "metadata_name": "release",
+            "description": "Release workflow",
+            "status": "running",
+            "status_history": [
+                { "event": "started", "unix_ms": 1_u64 },
+                { "event": "running", "status": "running", "unix_ms": 2_u64 }
+            ],
+            "cell_id": cell_id.as_str(),
+            "source": { "kind": "inline", "name": "inline", "path": null },
+            "args": null,
+            "started_unix_ms": 1_u64,
+            "updated_unix_ms": 2_u64,
+            "ended_unix_ms": null,
+            "duration_ms": null,
+            "output_preview": null,
+            "error": null
+        }))?,
+    )?;
+
+    let _wrong_cancel_submission_id = test
+        .codex
+        .submit(Op::WorkflowCancel {
+            run_id: "wrong-run".to_string(),
+            cell_id: cell_id.clone(),
+        })
+        .await?;
+    let error = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::Error(error)
+            if error.message.contains("wrong-run")
+                && error
+                    .message
+                    .contains("cell belongs to workflow run `run-1`") =>
+        {
+            Some(error.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert!(error.message.contains("Failed to cancel workflow run"));
+
+    let cancel_submission_id = test
+        .codex
+        .submit(Op::WorkflowCancel {
+            run_id: "run-1".to_string(),
+            cell_id: cell_id.clone(),
+        })
+        .await?;
+    let progress = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::WorkflowProgress(event) if event.run_id == "run-1" => Some(event.clone()),
+        EventMsg::Error(error) if error.message.contains("cancel workflow") => {
+            panic!("workflow cancel failed: {}", error.message)
+        }
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(
+        progress.thread_id,
+        test.session_configured.thread_id.to_string()
+    );
+    assert_eq!(progress.turn_id, cancel_submission_id);
+    assert_eq!(progress.run_id, "run-1");
+    assert_eq!(progress.cell_id, cell_id);
+    assert_eq!(progress.event, "workflow_cancelled");
+    assert!(progress.unix_ms > 0);
+    assert_eq!(progress.workflow, None);
+    assert_eq!(progress.message, None);
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_pause_and_continue_emit_progress_for_live_cell() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+
+    let code = r#"
+text("phase 1");
+yield_control();
+await new Promise(() => {});
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the workflow cell").await?;
+
+    let first_request = first_completion.single_request();
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2);
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+
+    write_minimal_workflow_snapshot(
+        test.codex_home_path(),
+        "run-pause",
+        "release",
+        &cell_id,
+        "running",
+    )?;
+
+    let pause_submission_id = test
+        .codex
+        .submit(Op::WorkflowPause {
+            run_id: "run-pause".to_string(),
+            cell_id: cell_id.clone(),
+        })
+        .await?;
+    let paused = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::WorkflowProgress(event)
+            if event.run_id == "run-pause" && event.event == "workflow_paused" =>
+        {
+            Some(event.clone())
+        }
+        EventMsg::Error(error) if error.message.contains("pause workflow") => {
+            panic!("workflow pause failed: {}", error.message)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(paused.turn_id, pause_submission_id);
+    assert_eq!(paused.cell_id, cell_id);
+    assert_eq!(
+        read_workflow_snapshot(test.codex_home_path(), "run-pause")?
+            .get("status")
+            .and_then(Value::as_str),
+        Some("paused")
+    );
+
+    let continue_submission_id = test
+        .codex
+        .submit(Op::WorkflowContinue {
+            run_id: "run-pause".to_string(),
+            cell_id: cell_id.clone(),
+        })
+        .await?;
+    let continued = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::WorkflowProgress(event)
+            if event.run_id == "run-pause" && event.event == "workflow_continued" =>
+        {
+            Some(event.clone())
+        }
+        EventMsg::Error(error) if error.message.contains("continue workflow") => {
+            panic!("workflow continue failed: {}", error.message)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(continued.turn_id, continue_submission_id);
+    assert_eq!(continued.cell_id, cell_id);
+    assert_eq!(
+        read_workflow_snapshot(test.codex_home_path(), "run-pause")?
+            .get("status")
+            .and_then(Value::as_str),
+        Some("paused")
+    );
+
+    test.codex
+        .submit(Op::WorkflowCancel {
+            run_id: "run-pause".to_string(),
+            cell_id: cell_id.clone(),
+        })
+        .await?;
+    wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::WorkflowProgress(event)
+            if event.run_id == "run-pause" && event.event == "workflow_cancelled" =>
+        {
+            Some(())
+        }
+        EventMsg::Error(error) if error.message.contains("cancel workflow") => {
+            panic!("workflow cleanup cancel failed: {}", error.message)
+        }
+        _ => None,
+    })
+    .await;
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_lifecycle_hooks_fire_for_inline_terminal_run() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            if let Err(error) = write_workflow_lifecycle_hooks(home, "inline-hook") {
+                panic!("failed to write workflow lifecycle hook fixtures: {error}");
+            }
+        })
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            config.workflows.mode = WorkflowMode::Dynamic;
+            config.workflows.approval = WorkflowApproval::Allow;
+            trust_discovered_hooks(config);
+        });
+    let test = builder.build(&server).await?;
+    let script = r#"
+export const meta = {
+  name: 'inline-hook',
+  description: 'Integration lifecycle hook smoke',
+};
+phase('Run');
+return 'workflow-ok';
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            responses::ev_function_call(
+                "call-1",
+                "workflow",
+                &serde_json::to_string(&serde_json::json!({ "script": script }))?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    submit_workflow_turn(
+        &test,
+        "run the lifecycle hook workflow",
+        WorkflowMode::Dynamic,
+    )
+    .await?;
+
+    let request = completion.single_request();
+    let (_, success) = request
+        .function_call_output_content_and_success("call-1")
+        .expect("workflow function output should be present");
+    assert_ne!(
+        success,
+        Some(false),
+        "workflow call failed unexpectedly: {}",
+        request.function_call_output("call-1")
+    );
+
+    let hook_inputs = read_workflow_lifecycle_hook_inputs(test.codex_home_path())?;
+    assert_eq!(
+        hook_inputs
+            .iter()
+            .map(|input| input["hook_event_name"]
+                .as_str()
+                .expect("hook input should include event name"))
+            .collect::<Vec<_>>(),
+        vec!["TaskCreated", "Notification", "TaskCompleted"],
+    );
+
+    assert_eq!(hook_inputs[0]["workflow_name"], "inline-hook");
+    assert_eq!(hook_inputs[0]["task_subject"], "inline-hook");
+    assert_eq!(
+        hook_inputs[0]["task_description"],
+        "Integration lifecycle hook smoke"
+    );
+    let run_id = hook_inputs[0]["task_id"]
+        .as_str()
+        .expect("task created hook should include workflow run id")
+        .to_string();
+    let cell_id = hook_inputs[0]["cell_id"]
+        .as_str()
+        .expect("task created hook should include code cell id")
+        .to_string();
+    assert!(run_id.starts_with("wf_"));
+
+    assert_eq!(hook_inputs[1]["notification_type"], "workflow_progress");
+    assert_eq!(hook_inputs[1]["run_id"], run_id);
+    assert_eq!(hook_inputs[1]["cell_id"], cell_id);
+    assert_eq!(hook_inputs[1]["event"], "workflow_complete");
+    assert_eq!(hook_inputs[1]["workflow"], "inline-hook");
+
+    assert_eq!(hook_inputs[2]["workflow_name"], "inline-hook");
+    assert_eq!(hook_inputs[2]["task_id"], run_id);
+    assert_eq!(hook_inputs[2]["cell_id"], cell_id);
+    assert_eq!(hook_inputs[2]["status"], "completed");
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_task_completed_hook_waits_for_follow_up_wait_terminal_update() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            if let Err(error) = write_workflow_lifecycle_hooks(home, "wait-hook") {
+                panic!("failed to write workflow lifecycle hook fixtures: {error}");
+            }
+        })
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            config.workflows.mode = WorkflowMode::Dynamic;
+            config.workflows.approval = WorkflowApproval::Allow;
+            trust_discovered_hooks(config);
+        });
+    let test = builder.build(&server).await?;
+    let gate = test.workspace_path("workflow-wait-hook.ready");
+    let wait_for_gate = wait_for_file_source(&gate)?;
+    let script = format!(
+        r#"
+export const meta = {{
+  name: 'wait-hook',
+  description: 'Yielded lifecycle hook smoke',
+}};
+phase('Start');
+yield_control();
+{wait_for_gate}
+phase('Done');
+return 'wait-ok';
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            responses::ev_function_call(
+                "call-1",
+                "workflow",
+                &serde_json::to_string(&serde_json::json!({ "script": script }))?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    submit_workflow_turn(
+        &test,
+        "start yielded lifecycle workflow",
+        WorkflowMode::Dynamic,
+    )
+    .await?;
+
+    let first_request = first_completion.single_request();
+    let first_items = function_tool_output_items(&first_request, "call-1");
+    let first_text = text_item(&first_items, /*index*/ 0);
+    assert!(first_text.contains("Workflow `wait-hook`"));
+    assert!(first_text.contains("Run: `wf_"));
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r".*",
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n",
+            r"\z"
+        ),
+        first_text,
+    );
+    let cell_id = extract_prefixed_running_cell_id(first_text);
+
+    let hook_inputs = read_workflow_lifecycle_hook_inputs(test.codex_home_path())?;
+    assert_eq!(
+        hook_inputs
+            .iter()
+            .map(|input| input["hook_event_name"]
+                .as_str()
+                .expect("hook input should include event name"))
+            .collect::<Vec<_>>(),
+        vec!["TaskCreated"],
+    );
+
+    fs::write(&gate, "ready")?;
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id,
+                    "yield_time_ms": 1_000,
+                }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    submit_workflow_turn(
+        &test,
+        "wait for yielded lifecycle workflow",
+        WorkflowMode::Dynamic,
+    )
+    .await?;
+
+    let second_request = second_completion.single_request();
+    let second_items = function_tool_output_items(&second_request, "call-2");
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&second_items, /*index*/ 0),
+    );
+
+    let hook_inputs = read_workflow_lifecycle_hook_inputs(test.codex_home_path())?;
+    assert_eq!(
+        hook_inputs
+            .iter()
+            .map(|input| input["hook_event_name"]
+                .as_str()
+                .expect("hook input should include event name"))
+            .collect::<Vec<_>>(),
+        vec!["TaskCreated", "Notification", "TaskCompleted"],
+    );
+    assert_eq!(hook_inputs[2]["workflow_name"], "wait-hook");
+    assert_eq!(hook_inputs[2]["status"], "completed");
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_wait_returns_error_for_unknown_session() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -3327,6 +4002,7 @@ text(
                         model: test.session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

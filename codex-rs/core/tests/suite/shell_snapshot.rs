@@ -179,6 +179,7 @@ async fn run_snapshot_command_with_options(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -279,6 +280,7 @@ async fn run_shell_command_snapshot_with_options(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -359,6 +361,7 @@ async fn run_tool_turn_on_harness(
                         model: session_model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -602,6 +605,7 @@ async fn shell_command_snapshot_still_intercepts_apply_patch() -> Result<()> {
                         model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()

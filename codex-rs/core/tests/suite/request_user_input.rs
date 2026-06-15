@@ -157,6 +157,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
                         model: session_configured.model.clone(),
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -300,6 +301,7 @@ async fn request_user_input_interrupt_emits_deferred_token_count() -> anyhow::Re
                         model: session_configured.model,
                         reasoning_effort: None,
                         developer_instructions: None,
+                        workflow_mode: None,
                     },
                 }),
                 ..Default::default()
@@ -425,6 +427,7 @@ async fn request_user_input_rejected_in_execute_mode_alias() -> anyhow::Result<(
             model,
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: None,
         },
     })
     .await
@@ -438,6 +441,7 @@ async fn request_user_input_rejected_in_default_mode_by_default() -> anyhow::Res
             model,
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: None,
         },
     })
     .await
@@ -456,6 +460,7 @@ async fn request_user_input_rejected_in_pair_mode_alias() -> anyhow::Result<()> 
             model,
             reasoning_effort: None,
             developer_instructions: None,
+            workflow_mode: None,
         },
     })
     .await

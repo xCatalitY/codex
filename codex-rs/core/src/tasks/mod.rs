@@ -473,7 +473,16 @@ impl Session {
             *active_turn = Some(ActiveTurn::default());
         }
 
-        let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
+        let final_output_json_schema = self
+            .input_queue
+            .trigger_turn_final_output_json_schema()
+            .await;
+        let turn_context = self
+            .new_default_turn_with_sub_id_and_final_output_json_schema(
+                sub_id,
+                final_output_json_schema,
+            )
+            .await;
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())

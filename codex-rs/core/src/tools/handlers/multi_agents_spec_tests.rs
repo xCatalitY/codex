@@ -87,6 +87,8 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         Some(true)
     );
     assert!(properties.contains_key("fork_turns"));
+    assert!(properties.contains_key("schema"));
+    assert!(properties.contains_key("isolation"));
     assert!(!properties.contains_key("items"));
     assert!(!properties.contains_key("fork_context"));
     assert_eq!(
@@ -354,9 +356,12 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(properties.contains_key("include_messages"));
+    assert!(description.contains("Returns only a summary by default"));
+    assert!(
+        description
+            .contains("set include_messages to true only when you need pending mailbox content")
+    );
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -364,9 +369,32 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
+    let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
-        output_schema.expect("wait output schema")["properties"]["message"]["description"],
+        output_schema["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
+    );
+    assert_eq!(
+        output_schema["properties"]["messages"]["description"],
+        json!(
+            "Pending mailbox messages, present only when include_messages is true. This can include child final content."
+        )
+    );
+    assert_eq!(
+        output_schema["properties"]["messages"]["items"]["properties"]["tool_calls"]["description"],
+        json!(
+            "Bounded tool calls observed in the child agent's latest turn, when include_messages is true."
+        )
+    );
+    assert_eq!(
+        output_schema["properties"]["messages"]["items"]["properties"]["reasoning"]["items"]["type"],
+        json!("string")
+    );
+    assert_eq!(
+        output_schema["properties"]["messages"]["items"]["properties"]["transcript"]["description"],
+        json!(
+            "Newest bounded Claude-shaped child transcript records from the child agent's response history, preserving message bodies, reasoning summaries, tool_use records, and linked tool_result records."
+        )
     );
 }
 

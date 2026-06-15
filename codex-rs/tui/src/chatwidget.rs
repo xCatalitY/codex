@@ -121,6 +121,7 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WorkflowProgressNotification;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::Constrained;
 use codex_config::ConstraintResult;
@@ -152,6 +153,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::Settings;
 #[cfg(any(target_os = "windows", test))]
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::config_types::WorkflowMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
@@ -289,6 +291,7 @@ use crate::bottom_pane::QueuedInputAction;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
+use crate::bottom_pane::WorkflowSettingsView;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::clipboard_paste::paste_image_to_temp_png;
@@ -365,6 +368,7 @@ mod hooks;
 mod interaction;
 mod skills;
 mod slash_dispatch;
+mod workflows;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
@@ -626,6 +630,8 @@ pub(crate) struct ChatWidget {
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it
     /// hidden for that thread instead of resurfacing it on every matching draft.
     dismissed_plan_mode_nudge_scopes: HashSet<PlanModeNudgeScope>,
+    /// Exact-draft suppression for the ultracode keyword trigger.
+    suppressed_workflow_keyword_nudge: Option<WorkflowKeywordNudgeSuppression>,
     thread_name: Option<String>,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
@@ -788,6 +794,12 @@ enum PlanModeNudgeScope {
     NewThread,
     /// Drafts associated with one configured thread.
     Thread(ThreadId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkflowKeywordNudgeSuppression {
+    scope: PlanModeNudgeScope,
+    text: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1847,11 +1859,17 @@ impl ChatWidget {
     pub(crate) fn on_plugin_mentions_loaded(
         &mut self,
         plugins: Option<Vec<PluginCapabilitySummary>>,
+        workflow_dirs: Vec<crate::legacy_core::config::WorkflowPluginDirectory>,
     ) {
-        if self.bottom_pane.plugins() == plugins.as_ref() {
-            return;
+        let workflow_dirs_changed = self.config.workflows.plugin_workflow_dirs != workflow_dirs;
+        if workflow_dirs_changed {
+            self.config.workflows.plugin_workflow_dirs = workflow_dirs;
+            self.sync_workflow_slash_commands();
+            self.request_redraw();
         }
-        self.bottom_pane.set_plugin_mentions(plugins);
+        if self.bottom_pane.plugins() != plugins.as_ref() {
+            self.bottom_pane.set_plugin_mentions(plugins);
+        }
     }
 
     pub(crate) fn sync_plugin_mentions_config(&mut self, config: &Config) {
