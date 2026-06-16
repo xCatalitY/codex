@@ -25,7 +25,8 @@ use codex_config::types::WorkflowDefinitionConfig;
 use codex_hooks::PermissionRequestDecision;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::models::FunctionCallOutputContentItem;
-use codex_protocol::protocol::{AskForApproval, ReviewDecision};
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputQuestion;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
@@ -1702,6 +1703,7 @@ const WORKFLOW_AGENT_RETRY_CAP = 5;
 const WORKFLOW_AGENT_CONTROL_POLL_MS = 10000;
 const WORKFLOW_CONCURRENCY_CAP = {concurrency_cap};
 const WORKFLOW_LOG_CAP = 1000;
+const WORKFLOW_PROGRESS_OUTPUT_MAX_CHARS = 4000;
 const WORKFLOW_SEQUENCE_ITEM_CAP = 4096;
 const __workflowState = {{ name: workflowName, description: workflowDescription, phases: [], agentCount: 0, childCount: 0, childDepth: 0, logPrefix: [], logCount: 0, logSuppressed: false, outputBudgetSpent: 0 }};
 const __workflowDefinitions = new Map();
@@ -1761,6 +1763,10 @@ function __workflowMetrics(extra = {{}}) {{
     logSuppressed: __workflowState.logSuppressed,
     ...extra,
   }};
+}}
+function __workflowProgressOutput(value) {{
+  if (typeof value !== "string") return undefined;
+  return value.length > WORKFLOW_PROGRESS_OUTPUT_MAX_CHARS ? value.slice(0, WORKFLOW_PROGRESS_OUTPUT_MAX_CHARS) : value;
 }}
 function __workflowApproxTokens(value) {{
   const textValue = String(value);
@@ -2199,7 +2205,7 @@ function __workflowAgentOwnMessage(spawn, waited, request) {{
   }}) ?? null;
 }}
 function __workflowAgentStatusIsFinal(status) {{
-  if (status === "interrupted") return true;
+  if (status === "interrupted" || status === "shutdown" || status === "not_found") return true;
   if (!status || typeof status !== "object") return false;
   return Object.prototype.hasOwnProperty.call(status, "completed")
     || Object.prototype.hasOwnProperty.call(status, "errored");
@@ -2208,6 +2214,79 @@ function __workflowAgentMessageIsFinal(message) {{
   if (!message || typeof message !== "object") return false;
   if (typeof message.final_message === "string") return true;
   return __workflowAgentStatusIsFinal(message.status);
+}}
+let __workflowWaitAgentNeedsTargets = false;
+function __workflowWaitAgentShouldRetryWithTargets(error) {{
+  const message = __workflowErrorMessage(error);
+  return message.includes("agent ids must be non-empty")
+    || message.includes("targets")
+    || message.includes("agent_ids");
+}}
+function __workflowLegacyWaitStatus(waited, spawn, request) {{
+  const statuses = waited && typeof waited.status === "object" ? waited.status : null;
+  if (!statuses) return undefined;
+  const taskName = spawn && typeof spawn.task_name === "string" ? spawn.task_name : request.task_name;
+  const spawnedAgentId = __workflowAgentIdFromSpawn(spawn, taskName);
+  const keys = [spawnedAgentId, String(spawnedAgentId), taskName, request.task_name].filter((key) => key !== undefined && key !== null);
+  for (const key of keys) {{
+    if (Object.prototype.hasOwnProperty.call(statuses, key)) return statuses[key];
+  }}
+  const entries = Object.values(statuses);
+  return entries.length === 1 ? entries[0] : undefined;
+}}
+function __workflowLegacyWaitFinalMessage(status) {{
+  if (status && typeof status === "object") {{
+    if (typeof status.completed === "string") return status.completed;
+    if (status.completed === null) return "";
+    if (typeof status.errored === "string") return status.errored;
+  }}
+  return undefined;
+}}
+function __workflowNormalizeLegacyWait(waited, spawn, request) {{
+  const status = __workflowLegacyWaitStatus(waited, spawn, request);
+  if (status === undefined) {{
+    return {{
+      timed_out: Boolean(waited && waited.timed_out),
+      messages: [],
+    }};
+  }}
+  const taskName = spawn && typeof spawn.task_name === "string" ? spawn.task_name : request.task_name;
+  const finalMessage = __workflowLegacyWaitFinalMessage(status);
+  const content = finalMessage ?? (typeof status === "string" ? status : __stringifyWorkflowValue(status));
+  return {{
+    timed_out: Boolean(waited && waited.timed_out),
+    messages: [
+      {{
+        author: taskName,
+        recipient: "root",
+        content,
+        status,
+        final_message: finalMessage,
+      }},
+    ],
+  }};
+}}
+async function __workflowWaitAgent(wait, spawn, request, intervalMs) {{
+  if (__workflowWaitAgentNeedsTargets) {{
+    const spawnedAgentId = __workflowAgentIdFromSpawn(spawn, request.task_name);
+    return __workflowNormalizeLegacyWait(
+      await wait({{ targets: [String(spawnedAgentId)], timeout_ms: intervalMs }}),
+      spawn,
+      request
+    );
+  }}
+  try {{
+    return await wait({{ timeout_ms: intervalMs, include_messages: true }});
+  }} catch (error) {{
+    if (!__workflowWaitAgentShouldRetryWithTargets(error)) throw error;
+    __workflowWaitAgentNeedsTargets = true;
+    const spawnedAgentId = __workflowAgentIdFromSpawn(spawn, request.task_name);
+    return __workflowNormalizeLegacyWait(
+      await wait({{ targets: [String(spawnedAgentId)], timeout_ms: intervalMs }}),
+      spawn,
+      request
+    );
+  }}
 }}
 async function __workflowWaitAgentWithControl(wait, spawn, request, waitTimeoutMs, controlPollMs, progressStallMs) {{
   const spawnedAgentId = __workflowAgentIdFromSpawn(spawn, request.task_name);
@@ -2219,7 +2298,7 @@ async function __workflowWaitAgentWithControl(wait, spawn, request, waitTimeoutM
     const before = await __workflowAgentControlState(spawnedAgentId);
     if (before) return {{ waited, control: before }};
     const intervalMs = Math.min(controlPollMs, remainingMs);
-    waited = await wait({{ timeout_ms: intervalMs, include_messages: true }});
+    waited = await __workflowWaitAgent(wait, spawn, request, intervalMs);
     const after = await __workflowAgentControlState(spawnedAgentId);
     if (after) return {{ waited, control: after }};
     if (__workflowAgentMessageIsFinal(__workflowAgentOwnMessage(spawn, waited, request))) {{
@@ -2595,27 +2674,28 @@ async function workflow(bodyOrRef, childArgs = undefined) {{
 }}
 __workflowProgress("workflow_start", {{ message: workflowDescription ?? undefined }});
 try {{
+  let __workflowOutput;
   const __workflowResult = await (async () => {{
   {code}
   }})();
   if (__workflowResult !== undefined) {{
-    const __workflowOutput = __workflowReturnValue(__workflowResult);
+    __workflowOutput = __workflowReturnValue(__workflowResult);
     __workflowRecordBudgetOutput(__workflowOutput);
     text(__workflowOutput);
   }} else if (__workflowTasks.length > 0) {{
     const __workflowTaskResults = await Promise.all(__workflowTasks);
     const __workflowVisibleResults = __workflowTaskResults.filter((result) => result !== undefined);
     if (__workflowVisibleResults.length === 1) {{
-      const __workflowOutput = __workflowReturnValue(__workflowVisibleResults[0]);
+      __workflowOutput = __workflowReturnValue(__workflowVisibleResults[0]);
       __workflowRecordBudgetOutput(__workflowOutput);
       text(__workflowOutput);
     }} else if (__workflowVisibleResults.length > 1) {{
-      const __workflowOutput = __workflowReturnValue(__workflowVisibleResults);
+      __workflowOutput = __workflowReturnValue(__workflowVisibleResults);
       __workflowRecordBudgetOutput(__workflowOutput);
       text(__workflowOutput);
     }}
   }}
-  __workflowProgress("workflow_complete", {{ data: __workflowMetrics() }});
+  __workflowProgress("workflow_complete", {{ data: __workflowMetrics(__workflowOutput === undefined ? {{}} : {{ output: __workflowProgressOutput(__workflowOutput) }}) }});
 }} catch (error) {{
   __workflowProgress("workflow_failed", {{ message: __workflowErrorMessage(error), data: __workflowMetrics({{ error: __workflowErrorMessage(error) }}) }});
   throw error;
@@ -2884,6 +2964,7 @@ mod tests {
     struct WorkflowAgentRuntimeProbe {
         state: std::sync::Mutex<WorkflowAgentRuntimeProbeState>,
         first_wait_times_out: bool,
+        legacy_agent_tools: bool,
     }
 
     #[derive(Default)]
@@ -2894,6 +2975,7 @@ mod tests {
         interrupt_reasons: Vec<Option<String>>,
         control_polls: Vec<String>,
         notifications: Vec<JsonValue>,
+        wait_inputs: Vec<JsonValue>,
     }
 
     impl Default for WorkflowAgentRuntimeProbe {
@@ -2901,6 +2983,7 @@ mod tests {
             Self {
                 state: std::sync::Mutex::new(WorkflowAgentRuntimeProbeState::default()),
                 first_wait_times_out: true,
+                legacy_agent_tools: false,
             }
         }
     }
@@ -2910,6 +2993,15 @@ mod tests {
             Self {
                 state: std::sync::Mutex::new(WorkflowAgentRuntimeProbeState::default()),
                 first_wait_times_out: false,
+                legacy_agent_tools: false,
+            }
+        }
+
+        fn legacy_agent_tools() -> Self {
+            Self {
+                state: std::sync::Mutex::new(WorkflowAgentRuntimeProbeState::default()),
+                first_wait_times_out: false,
+                legacy_agent_tools: true,
             }
         }
 
@@ -2919,6 +3011,10 @@ mod tests {
 
         fn wait_calls(&self) -> usize {
             self.state.lock().expect("probe state").wait_calls
+        }
+
+        fn wait_inputs(&self) -> Vec<JsonValue> {
+            self.state.lock().expect("probe state").wait_inputs.clone()
         }
 
         fn interrupts(&self) -> Vec<String> {
@@ -2963,7 +3059,13 @@ mod tests {
 
                 let input = invocation.input.unwrap_or(JsonValue::Null);
                 let mut state = self.state.lock().expect("probe state");
-                match invocation.tool_name.name.as_str() {
+                let tool_name = invocation
+                    .tool_name
+                    .name
+                    .rsplit("__")
+                    .next()
+                    .unwrap_or(invocation.tool_name.name.as_str());
+                match tool_name {
                     "spawn_agent" => {
                         let task_name = input
                             .get("task_name")
@@ -2971,20 +3073,51 @@ mod tests {
                             .expect("spawn_agent task_name")
                             .to_string();
                         state.spawns.push(task_name.clone());
-                        Ok(serde_json::json!({
-                            "task_name": task_name,
-                            "agentId": task_name,
-                            "workflow_live_transcript": false,
-                        }))
+                        if self.legacy_agent_tools {
+                            Ok(serde_json::json!({
+                                "agent_id": task_name,
+                                "nickname": null,
+                            }))
+                        } else {
+                            Ok(serde_json::json!({
+                                "task_name": task_name,
+                                "agentId": task_name,
+                                "workflow_live_transcript": false,
+                            }))
+                        }
                     }
                     "wait_agent" => {
                         state.wait_calls += 1;
+                        state.wait_inputs.push(input.clone());
                         let wait_call = state.wait_calls;
                         let task_name = state
                             .spawns
                             .last()
                             .cloned()
                             .expect("wait_agent after spawn_agent");
+                        if self.legacy_agent_tools {
+                            let target = input
+                                .get("targets")
+                                .and_then(JsonValue::as_array)
+                                .and_then(|targets| targets.first())
+                                .and_then(JsonValue::as_str)
+                                .map(ToString::to_string)
+                                .ok_or_else(|| "agent ids must be non-empty".to_string())?;
+                            if self.first_wait_times_out && wait_call == 1 {
+                                let mut statuses = serde_json::Map::new();
+                                statuses.insert(target, JsonValue::String("running".to_string()));
+                                return Ok(serde_json::json!({
+                                    "status": JsonValue::Object(statuses),
+                                    "timed_out": true,
+                                }));
+                            }
+                            let mut statuses = serde_json::Map::new();
+                            statuses.insert(target, serde_json::json!({ "completed": "agent-ok" }));
+                            return Ok(serde_json::json!({
+                                "status": JsonValue::Object(statuses),
+                                "timed_out": false,
+                            }));
+                        }
                         if self.first_wait_times_out && wait_call == 1 {
                             Ok(serde_json::json!({
                                 "message": "Wait timed out.",
@@ -3075,6 +3208,18 @@ mod tests {
         [
             "spawn_agent",
             "wait_agent",
+            "interrupt_agent",
+            "workflow_control",
+        ]
+        .into_iter()
+        .map(workflow_agent_test_tool)
+        .collect()
+    }
+
+    fn workflow_legacy_agent_test_tools() -> Vec<codex_code_mode::ToolDefinition> {
+        [
+            "multi_agent_v1__spawn_agent",
+            "multi_agent_v1__wait_agent",
             "interrupt_agent",
             "workflow_control",
         ]
@@ -5134,6 +5279,59 @@ return `result:${first}/${second}`;
     }
 
     #[tokio::test]
+    async fn workflow_agent_helper_waits_on_legacy_namespaced_agent_tools() {
+        let args = WorkflowArgs {
+            name: None,
+            script: Some(
+                r#"
+export const meta = {
+  name: 'legacy-agent-wait',
+  description: 'Wait on legacy namespaced agent tools',
+}
+const result = await agent('legacy task');
+return `legacy:${result}`;
+"#
+                .to_string(),
+            ),
+            script_path: None,
+            args: None,
+            resume_from_run_id: None,
+            title: None,
+            description: None,
+            max_output_tokens: None,
+        };
+        let validated =
+            validate_workflow_script(args.script.as_deref().expect("script")).expect("valid");
+        let script = build_test_workflow_script("wf_test", &args, &validated, &[], &[], None)
+            .expect("workflow script");
+        let probe = Arc::new(WorkflowAgentRuntimeProbe::legacy_agent_tools());
+        let service = codex_code_mode::CodeModeService::with_delegate(probe.clone());
+
+        let response = service
+            .execute(codex_code_mode::ExecuteRequest {
+                tool_call_id: "call-1".to_string(),
+                enabled_tools: workflow_legacy_agent_test_tools(),
+                source: script,
+                yield_time_ms: None,
+                max_output_tokens: None,
+            })
+            .await
+            .expect("start workflow script")
+            .initial_response()
+            .await
+            .expect("workflow result");
+        let text = output_text(response);
+
+        assert!(text.contains("legacy:agent-ok"), "{text}");
+        let spawns = probe.spawns();
+        assert_eq!(spawns.len(), 1);
+        let wait_inputs = probe.wait_inputs();
+        assert_eq!(wait_inputs.len(), 2);
+        assert!(wait_inputs[0].get("targets").is_none());
+        assert_eq!(wait_inputs[1]["targets"], serde_json::json!([spawns[0]]));
+    }
+
+    #[tokio::test]
     async fn workflow_agent_timeout_interrupts_retries_respawns_and_propagates_result() {
         let args = WorkflowArgs {
             name: None,
@@ -5382,15 +5580,17 @@ return 'ok';
         assert!(script.contains("Workflow agent() call cap reached"));
         assert!(script.contains("const WORKFLOW_CONCURRENCY_CAP = 3;"));
         assert!(script.contains("const WORKFLOW_LOG_CAP = 1000;"));
+        assert!(script.contains("const WORKFLOW_PROGRESS_OUTPUT_MAX_CHARS = 4000;"));
         assert!(script.contains("function __workflowEmitLog(message)"));
         assert!(script.contains("workflow log cap reached (${WORKFLOW_LOG_CAP})"));
         assert!(script.contains("function __workflowMetrics(extra = {})"));
+        assert!(script.contains("function __workflowProgressOutput(value)"));
         assert!(script.contains("agentCount: __workflowState.agentCount"));
         assert!(script.contains("childCount: __workflowState.childCount"));
         assert!(script.contains("logCount: __workflowState.logCount"));
         assert!(
             script.contains(
-                "__workflowProgress(\"workflow_complete\", { data: __workflowMetrics() })"
+                "__workflowProgress(\"workflow_complete\", { data: __workflowMetrics(__workflowOutput === undefined ? {} : { output: __workflowProgressOutput(__workflowOutput) }) })"
             )
         );
         assert!(script.contains(

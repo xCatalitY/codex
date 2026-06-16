@@ -483,9 +483,11 @@ async fn update_workflow_snapshot_in_dir(
 ) -> Result<Option<WorkflowWaitUpdate>, String> {
     let response = wait_outcome_response(wait_response);
     let cell_id = runtime_response_cell_id(response).as_str();
-    let Some((path, mut snapshot)) =
-        newest_running_workflow_snapshot_for_cell(snapshot_dir, cell_id).await?
-    else {
+    let snapshot = match newest_running_workflow_snapshot_for_cell(snapshot_dir, cell_id).await? {
+        Some(snapshot) => Some(snapshot),
+        None => newest_completed_progress_workflow_snapshot_for_cell(snapshot_dir, cell_id).await?,
+    };
+    let Some((path, mut snapshot)) = snapshot else {
         return Ok(None);
     };
     let matched_run_id = workflow_snapshot_run_id(&snapshot);
@@ -1659,6 +1661,31 @@ async fn newest_running_workflow_snapshot_for_cell(
     snapshot_dir: &Path,
     cell_id: &str,
 ) -> Result<Option<(PathBuf, JsonValue)>, String> {
+    newest_workflow_snapshot_for_cell_matching(snapshot_dir, cell_id, |snapshot| {
+        snapshot
+            .get("status")
+            .and_then(JsonValue::as_str)
+            .is_some_and(workflow_status_is_active)
+    })
+    .await
+}
+
+async fn newest_completed_progress_workflow_snapshot_for_cell(
+    snapshot_dir: &Path,
+    cell_id: &str,
+) -> Result<Option<(PathBuf, JsonValue)>, String> {
+    newest_workflow_snapshot_for_cell_matching(snapshot_dir, cell_id, |snapshot| {
+        snapshot.get("status").and_then(JsonValue::as_str) == Some("completed")
+            && workflow_last_progress_event(snapshot) == Some("workflow_complete")
+    })
+    .await
+}
+
+async fn newest_workflow_snapshot_for_cell_matching(
+    snapshot_dir: &Path,
+    cell_id: &str,
+    include: impl Fn(&JsonValue) -> bool,
+) -> Result<Option<(PathBuf, JsonValue)>, String> {
     let entries = match tokio::fs::read_dir(snapshot_dir).await {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1693,11 +1720,7 @@ async fn newest_running_workflow_snapshot_for_cell(
         if snapshot.get("cell_id").and_then(JsonValue::as_str) != Some(cell_id) {
             continue;
         }
-        if !snapshot
-            .get("status")
-            .and_then(JsonValue::as_str)
-            .is_some_and(workflow_status_is_active)
-        {
+        if !include(&snapshot) {
             continue;
         }
         let sort_key = snapshot
@@ -1712,11 +1735,20 @@ async fn newest_running_workflow_snapshot_for_cell(
         candidates.push((sort_key, path, snapshot));
     }
 
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
     Ok(candidates
         .into_iter()
         .next()
         .map(|(_sort_key, path, snapshot)| (path, snapshot)))
+}
+
+fn workflow_last_progress_event(snapshot: &JsonValue) -> Option<&str> {
+    snapshot
+        .get("progress")
+        .and_then(JsonValue::as_array)
+        .and_then(|events| events.last())
+        .and_then(|event| event.get("event"))
+        .and_then(JsonValue::as_str)
 }
 
 async fn workflow_snapshot_for_run(
@@ -2430,6 +2462,7 @@ fn append_workflow_progress_event(
 ) -> Option<WorkflowProgressUpdate> {
     let now = unix_time_millis();
     let unix_ms = millis_i64(now);
+    let notification_event = notification.event.clone();
     let run_id = snapshot
         .get("run_id")
         .and_then(JsonValue::as_str)
@@ -2479,13 +2512,19 @@ fn append_workflow_progress_event(
     insert_optional_u64(&mut event, "step_index", notification.step_index);
     insert_optional_string(&mut event, "error", notification.error);
     insert_optional_string(&mut event, "message", notification.message);
+    let completion_output_preview = if notification_event == "workflow_complete" {
+        notification
+            .data
+            .as_ref()
+            .and_then(workflow_complete_progress_output_preview)
+    } else {
+        None
+    };
     if let Some(data) = notification.data {
         event.insert("data".to_string(), data);
     }
 
-    let Some(object) = snapshot.as_object_mut() else {
-        return None;
-    };
+    let object = snapshot.as_object_mut()?;
     object.insert("updated_unix_ms".to_string(), json_millis(now));
     let progress = object
         .entry("progress".to_string())
@@ -2502,7 +2541,64 @@ fn append_workflow_progress_event(
             *other = JsonValue::Array(vec![JsonValue::Object(event)]);
         }
     }
+    if notification_event == "workflow_complete" {
+        mark_workflow_snapshot_completed_from_progress(
+            object,
+            now,
+            completion_output_preview.as_deref(),
+        );
+    }
     Some(update)
+}
+
+fn mark_workflow_snapshot_completed_from_progress(
+    object: &mut serde_json::Map<String, JsonValue>,
+    now: u128,
+    output_preview: Option<&str>,
+) {
+    if object
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|status| !workflow_status_is_active(status))
+    {
+        return;
+    }
+    let started = object
+        .get("started_unix_ms")
+        .and_then(JsonValue::as_u64)
+        .map(u128::from)
+        .unwrap_or(now);
+    object.insert(
+        "status".to_string(),
+        JsonValue::String("completed".to_string()),
+    );
+    object.insert("updated_unix_ms".to_string(), json_millis(now));
+    object.insert("ended_unix_ms".to_string(), json_millis(now));
+    object.insert(
+        "duration_ms".to_string(),
+        json_millis(now.saturating_sub(started)),
+    );
+    object.insert("error".to_string(), JsonValue::Null);
+    if let Some(output_preview) = output_preview
+        && !output_preview.trim().is_empty()
+    {
+        object.insert(
+            "output_preview".to_string(),
+            JsonValue::String(output_preview.to_string()),
+        );
+    }
+    append_workflow_status_history_event(object, "completed", now, output_preview);
+}
+
+fn workflow_complete_progress_output_preview(data: &JsonValue) -> Option<String> {
+    ["output", "output_preview", "outputPreview", "result"]
+        .iter()
+        .find_map(|field| {
+            data.get(*field)
+                .and_then(JsonValue::as_str)
+                .map(truncate_workflow_preview)
+                .filter(|preview| !preview.trim().is_empty())
+        })
 }
 
 fn insert_optional_string(
@@ -3104,6 +3200,73 @@ mod tests {
             .expect("read transcript metadata");
         let run_json: JsonValue = serde_json::from_str(&run).expect("transcript metadata json");
         assert_eq!(run_json["progress"][0]["agent"], "build_agent");
+    }
+
+    #[tokio::test]
+    async fn workflow_complete_progress_clears_active_marker_and_wait_can_enrich_snapshot() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let active_dir = temp_dir.path().join(WORKFLOW_ACTIVE_RUNS_DIR);
+        let transcript_dir = temp_dir.path().join("wf_complete").join("transcripts");
+        tokio::fs::create_dir_all(&active_dir)
+            .await
+            .expect("create active dir");
+        let mut snapshot = workflow_snapshot("wf_complete", "cell-5", "running", 20);
+        snapshot.as_object_mut().unwrap().insert(
+            "transcript_dir".to_string(),
+            JsonValue::String(transcript_dir.display().to_string()),
+        );
+        write_snapshot(temp_dir.path(), "wf_complete.json", snapshot.clone()).await;
+        write_snapshot(active_dir.as_path(), "wf_complete.json", snapshot).await;
+
+        append_workflow_progress_in_dir(
+            temp_dir.path(),
+            "cell-5",
+            WorkflowProgressNotification {
+                event: "workflow_complete".to_string(),
+                workflow: Some("release".to_string()),
+                phase: None,
+                agent: None,
+                agent_id: None,
+                child: None,
+                child_index: None,
+                child_run_id: None,
+                item_index: None,
+                stage_index: None,
+                step_index: None,
+                error: None,
+                message: None,
+                data: Some(serde_json::json!({ "agentCount": 1, "output": "progress done" })),
+            },
+        )
+        .await
+        .expect("append workflow complete progress")
+        .expect("matching snapshot");
+
+        let snapshot = read_snapshot(temp_dir.path(), "wf_complete.json").await;
+        assert_eq!(snapshot["status"], "completed");
+        assert_eq!(snapshot["output_preview"], "progress done");
+        assert_eq!(snapshot["status_history"][2]["status"], "completed");
+        assert_eq!(snapshot["status_history"][2]["message"], "progress done");
+        assert!(!active_dir.join("wf_complete.json").exists());
+
+        update_workflow_snapshot_in_dir(
+            temp_dir.path(),
+            &codex_code_mode::WaitOutcome::LiveCell(codex_code_mode::RuntimeResponse::Result {
+                cell_id: codex_code_mode::CellId::new("cell-5".to_string()),
+                content_items: vec![codex_code_mode::FunctionCallOutputContentItem::InputText {
+                    text: "done".to_string(),
+                }],
+                error_text: None,
+            }),
+        )
+        .await
+        .expect("update completed workflow snapshot")
+        .expect("matching snapshot");
+
+        let snapshot = read_snapshot(temp_dir.path(), "wf_complete.json").await;
+        assert_eq!(snapshot["status"], "completed");
+        assert_eq!(snapshot["output_preview"], "done");
+        assert!(!active_dir.join("wf_complete.json").exists());
     }
 
     #[tokio::test]
