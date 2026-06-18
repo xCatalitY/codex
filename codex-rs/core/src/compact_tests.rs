@@ -283,7 +283,7 @@ fn build_compacted_history_preserves_user_message_metadata() {
 }
 
 #[test]
-fn collect_recent_context_tail_preserves_latest_user_and_outputs() {
+fn collect_recent_context_tail_preserves_outputs_after_latest_user() {
     let latest_user = user_message("latest user");
     let reasoning = ResponseItem::Reasoning {
         id: "rs_1".to_string(),
@@ -309,16 +309,7 @@ fn collect_recent_context_tail_preserves_latest_user_and_outputs() {
 
     let tail = collect_recent_context_tail(&items);
 
-    assert_eq!(
-        tail,
-        vec![
-            latest_user,
-            reasoning,
-            tool_call,
-            tool_output,
-            final_message
-        ]
-    );
+    assert_eq!(tail, vec![reasoning, tool_call, tool_output, final_message]);
 }
 
 #[test]
@@ -343,8 +334,7 @@ fn retain_complete_tool_pairs_drops_orphaned_tool_items() {
 }
 
 #[test]
-fn build_compacted_history_with_recent_tail_deduplicates_latest_user() {
-    let latest_user = user_message("latest user");
+fn build_compacted_history_with_recent_tail_keeps_latest_user_before_summary() {
     let final_message = assistant_message("latest answer");
     let history = build_compacted_history_with_recent_tail(
         Vec::new(),
@@ -353,15 +343,15 @@ fn build_compacted_history_with_recent_tail_deduplicates_latest_user() {
             compacted_user_message("latest user"),
         ],
         "SUMMARY",
-        vec![latest_user.clone(), final_message.clone()],
+        vec![final_message.clone()],
     );
 
     assert_eq!(
         history,
         vec![
             user_message("older user"),
+            user_message("latest user"),
             user_message("SUMMARY"),
-            latest_user,
             final_message,
         ]
     );

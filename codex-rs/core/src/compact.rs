@@ -511,10 +511,7 @@ fn collect_recent_context_tail(items: &[ResponseItem]) -> Vec<ResponseItem> {
     selected_outputs.reverse();
     let selected_outputs = retain_complete_tool_pairs(selected_outputs);
 
-    let mut recent_tail = Vec::with_capacity(selected_outputs.len() + 1);
-    recent_tail.push(items[last_user_index].clone());
-    recent_tail.extend(selected_outputs);
-    recent_tail
+    selected_outputs
 }
 
 fn real_user_message(item: &ResponseItem) -> Option<CompactedUserMessage> {
@@ -733,18 +730,6 @@ fn build_compacted_history_with_limit(
     recent_tail: Vec<ResponseItem>,
     max_tokens: usize,
 ) -> Vec<ResponseItem> {
-    let recent_tail_user_message = recent_tail.first().and_then(real_user_message_text);
-    let user_messages = match recent_tail_user_message.as_deref() {
-        Some(tail_user_message)
-            if user_messages
-                .last()
-                .is_some_and(|last| last.message.as_str() == tail_user_message) =>
-        {
-            &user_messages[..user_messages.len().saturating_sub(1)]
-        }
-        _ => user_messages,
-    };
-
     let mut selected_messages: Vec<CompactedUserMessage> = Vec::new();
     if max_tokens > 0 {
         let mut remaining = max_tokens;
